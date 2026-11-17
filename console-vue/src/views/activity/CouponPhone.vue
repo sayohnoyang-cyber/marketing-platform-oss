@@ -55,7 +55,8 @@ export default {
   border: 1px solid #e1dcd0;
   background: linear-gradient(135deg, #eef2eb 0%, #ede8dc 60%, #f3eae3 100%);
 }
-.phonehero-motion > *:not(.pb-orbit) {
+/* 仅提升插槽内文本与交互层层级，避免覆盖 DotStage 内部绝对定位的 canvas 导致高度循环撑开 */
+.phonehero-motion > *:not(.pb-orbit):not(.dot-stage-canvas) {
   position: relative;
   z-index: 1;
 }

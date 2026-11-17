@@ -4,6 +4,8 @@
       <div>
         <h1>创建活动</h1>
       </div>
+      <!-- 在创建活动页头补充返回入口，方便用户直接退回活动列表 -->
+      <router-link class="btn" to="/activities">返回活动列表</router-link>
     </div>
     <div v-if="activities.length" class="card copybar">
       <span class="copy-label"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="3"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></svg>从已有活动复制</span>
