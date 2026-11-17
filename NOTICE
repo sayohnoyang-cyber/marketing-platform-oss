@@ -1,0 +1,11 @@
+Marketing Platform
+Copyright 2026 yangwencheng
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file in the project root.
+
+This product includes software derived from nageoffer/shortlink
+(https://github.com/nageoffer/shortlink), Copyright the original
+nageoffer/shortlink authors, licensed under the Apache License,
+Version 2.0. The derived code lives primarily in the marketing-shortlink
+module. A copy of the Apache License is included in this distribution.

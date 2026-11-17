@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>登录原型 v3 · 营销工作台</title>
+<style>
+  :root {
+    --bg: #faf9f5; --ink: #141413; --ink2: #3d3d3a; --muted: #6b6a64; --line: #e8e6dc; --cloud: #f0eee6;
+    --clay: #c6613f; --clayd: #b0502f; --tint: #f6e9e2; --olive: #5b7040;
+    --font: "Anthropic Sans", Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --serif: "Anthropic Serif", Georgia, "Noto Serif SC", "Songti SC", "Source Han Serif SC", serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 14px; -webkit-font-smoothing: antialiased; }
+  button, input { font: inherit; }
+  button { cursor: pointer; border: 0; background: none; }
+
+  .page { height: 100svh; min-height: 640px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(420px, 1fr); padding: 16px; gap: 16px; }
+
+  /* ---------- 左侧：与工作台一致的浅色画布 ---------- */
+  .scene { position: relative; overflow: hidden; border-radius: 24px; background: var(--cloud); border: 1px solid var(--line); isolation: isolate; }
+  #dots { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -2; }
+  .scene::after { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background: linear-gradient(0deg, var(--cloud) 6%, #f0eee6d0 22%, transparent 42%), linear-gradient(180deg, var(--cloud) 0%, transparent 18%); }
+
+  .brand { position: absolute; top: 30px; left: 34px; display: flex; gap: 11px; align-items: center; z-index: 3; }
+  .mark { width: 34px; height: 34px; border-radius: 10px; background: var(--clay); color: #fff; display: grid; place-items: center; font-family: var(--serif); font-size: 19px; }
+  .brand strong { font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
+
+  .headline { position: absolute; left: 38px; bottom: 36px; z-index: 3; }
+  .headline h1 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: clamp(34px, 3.4vw, 52px); line-height: 1.3; letter-spacing: .02em; }
+  .headline h1 em { font-style: normal; color: var(--clay); }
+
+  /* 轨道 + 中心“序”印章 */
+  .core { position: absolute; left: 56%; top: 44%; width: 0; height: 0; z-index: 1; }
+  .orbit { position: absolute; width: 560px; height: 560px; left: -280px; top: -280px; pointer-events: none; }
+  .orbit svg { width: 100%; height: 100%; overflow: visible; }
+  .spin { transform-origin: 280px 280px; animation: turn var(--d, 60s) linear infinite; }
+  .spin.rev { animation-direction: reverse; }
+  .seal { position: absolute; width: 76px; height: 76px; left: -38px; top: -38px; border-radius: 22px; background: var(--clay); color: #fff; display: grid; place-items: center;
+    font-family: var(--serif); font-size: 40px; box-shadow: 0 18px 40px -12px #b0502f88, inset 0 1px 0 #ffffff40; }
+  .seal::before, .seal::after { content: ""; position: absolute; inset: -1px; border-radius: inherit; border: 1.5px solid var(--clay); animation: halo 3.2s ease-out infinite; }
+  .seal::after { animation-delay: 1.6s; }
+
+  #links { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
+  #links path { fill: none; stroke: #c6613f; stroke-opacity: .35; stroke-width: 1; stroke-dasharray: 3 5; animation: flow 1.6s linear infinite; }
+  #bridge { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 4; pointer-events: none; }
+  #bridge .track { fill: none; stroke: #c6613f; stroke-opacity: .14; stroke-width: 6; stroke-linecap: round; }
+  #bridge .flow { fill: none; stroke: #c6613f; stroke-opacity: .55; stroke-width: 1.2; stroke-dasharray: 3 5; animation: flow 1.2s linear infinite; }
+  .seal.beat { animation: beat .6s cubic-bezier(.2,.7,.2,1); }
+  @keyframes beat { 40% { transform: scale(1.1); } }
+
+  /* 漂浮的业务小卡片：券、活动、触达、短链 */
+  .chip { position: absolute; z-index: 2; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 14px 34px -18px #5a432b40, 0 2px 6px -2px #5a432b14; }
+  .float { animation: float var(--f, 7s) ease-in-out infinite alternate; }
+  .k { font-size: 12px; color: var(--muted); }
+
+  .coupon { left: 9%; top: 19%; display: flex; overflow: hidden; width: 238px; }
+  .coupon .stub { width: 78px; padding: 14px 0; background: var(--clay); color: #fff; text-align: center; position: relative; }
+  .coupon .stub b { display: block; font-family: var(--serif); font-size: 26px; font-weight: 500; line-height: 1.1; }
+  .coupon .stub small { font-size: 11px; opacity: .85; }
+  .coupon .stub::after { content: ""; position: absolute; right: -1px; top: 8px; bottom: 8px; border-right: 2px dotted #fff8; }
+  .coupon .body { padding: 13px 14px; flex: 1; }
+  .coupon .body strong { display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .activity { right: 7%; top: 13%; width: 236px; padding: 14px 16px; }
+  .activity .row { display: flex; justify-content: space-between; align-items: center; }
+  .activity strong { font-size: 14px; font-weight: 600; }
+  .tag { display: inline-flex; gap: 6px; align-items: center; font-size: 11px; color: var(--olive); background: #eef1e7; padding: 2px 8px; border-radius: 999px; }
+  .tag i { width: 6px; height: 6px; border-radius: 50%; background: var(--olive); animation: blink 1.6s ease-in-out infinite; }
+  .bar { height: 6px; border-radius: 6px; background: var(--cloud); margin: 12px 0 9px; overflow: hidden; }
+  .bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, #e3a183, var(--clay)); transition: width 1.4s cubic-bezier(.2,.7,.2,1); }
+
+  .reach { right: 12%; top: 60%; width: 210px; padding: 14px 16px 10px; }
+  .reach .big { font-family: var(--serif); font-size: 28px; line-height: 1.2; margin: 2px 0 2px; }
+  .reach .up { color: var(--olive); font-size: 12px; margin-left: 6px; font-family: var(--font); }
+  .reach svg { display: block; width: 100%; height: 38px; }
+  .spark { fill: none; stroke: var(--clay); stroke-width: 1.8; stroke-linecap: round; stroke-dasharray: 260; stroke-dashoffset: 260; animation: draw 5s ease-in-out infinite; }
+
+  .link { left: 15%; top: 58%; padding: 9px 12px; display: flex; gap: 10px; align-items: center; border-radius: 999px; }
+  .link .ico { width: 26px; height: 26px; border-radius: 50%; background: var(--tint); color: var(--clay); display: grid; place-items: center; }
+  .link .ico svg { width: 14px; height: 14px; }
+  .link code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--ink2); }
+  .plus { color: var(--clay); font-size: 12px; font-weight: 600; min-width: 34px; }
+  .plus.pop { animation: pop .8s ease-out; }
+
+  /* ---------- 右侧：表单 ---------- */
+  /* 右侧延续左侧点阵：同一网格、同一圆心，波纹越过面板边界继续扩散并逐渐淡出 */
+  .entry { position: relative; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 24px; isolation: isolate; }
+  #dots2 { position: absolute; inset: -16px -16px -16px -16px; width: calc(100% + 32px); height: calc(100% + 32px); z-index: -1; pointer-events: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 0%, #0009 45%, transparent 95%); mask-image: linear-gradient(90deg, #000 0%, #0009 45%, transparent 95%); }
+  /* 表单本身也是一张“卡片”，与左侧业务卡片同一材质 */
+  .form { position: relative; width: min(420px, 100%); padding: 40px 40px 30px; background: #fff; border: 1px solid var(--line); border-radius: 20px;
+    box-shadow: 0 24px 60px -30px #5a432b55, 0 2px 8px -3px #5a432b14; }
+  .form::before { content: ""; position: absolute; left: -5px; top: 50%; width: 9px; height: 9px; margin-top: -4.5px; border-radius: 50%; background: var(--clay); box-shadow: 0 0 0 4px #c6613f22; }
+  .form-mark { display: inline-flex; gap: 8px; align-items: center; margin-bottom: 18px; color: var(--clay); font-size: 12px; font-weight: 500; }
+  .form-mark span { width: 22px; height: 22px; border-radius: 7px; background: var(--tint); display: grid; place-items: center; font-family: var(--serif); font-size: 13px; }
+  .form h2 { margin: 0 0 8px; font-family: var(--serif); font-weight: 500; font-size: 34px; letter-spacing: -.01em; }
+  .form .sub { margin: 0 0 34px; color: var(--muted); font-size: 14px; }
+  .notice { display: flex; gap: 10px; align-items: center; margin: -14px 0 24px; padding: 11px 14px; border-radius: 10px; font-size: 13px; }
+  .notice svg { width: 16px; height: 16px; flex-shrink: 0; }
+  .notice.info { background: var(--cloud); color: var(--ink2); border: 1px solid var(--line); }
+  .notice.error { background: var(--tint); color: #9a3f24; border: 1px solid #efd5c8; }
+  .field { display: block; margin-bottom: 18px; }
+  .field > span { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 500; color: var(--ink2); }
+  .shell { position: relative; }
+  .shell input { width: 100%; height: 48px; padding: 0 15px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); font-size: 15px; outline: none; transition: border-color .2s, box-shadow .2s; }
+  .shell input::placeholder { color: #a8a499; }
+  .shell input:hover { border-color: #d6d1c3; }
+  .shell input:focus { border-color: var(--clay); box-shadow: 0 0 0 4px #c6613f14; }
+  .shell.pwd input { padding-right: 48px; }
+  .eye { position: absolute; right: 7px; top: 7px; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; color: #8f8b81; }
+  .eye:hover { background: var(--cloud); color: var(--ink2); }
+  .eye svg { width: 18px; height: 18px; }
+  .remember { display: inline-flex; gap: 8px; align-items: center; margin: 4px 0 26px; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .remember input { width: 15px; height: 15px; margin: 0; accent-color: var(--clay); }
+  .submit { width: 100%; height: 48px; border-radius: 10px; background: var(--clay); color: #fff; box-shadow: 0 8px 18px -10px #b0502faa; font-size: 15px; font-weight: 500; display: flex; gap: 10px; align-items: center; justify-content: center; transition: background-color .2s, transform .15s; position: relative; overflow: hidden; }
+  .submit:hover:not(:disabled) { background: var(--clay); }
+  .submit:active:not(:disabled) { transform: scale(.99); }
+  .submit:disabled { cursor: progress; opacity: .85; }
+  .spinner { width: 15px; height: 15px; border: 1.5px solid #ffffff55; border-top-color: #fff; border-radius: 50%; animation: turn .7s linear infinite; }
+  .switch { margin-top: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+  .switch button { color: var(--clay); font-size: 13px; font-weight: 500; padding: 4px 4px; }
+  .switch button:hover { color: var(--clayd); text-decoration: underline; text-underline-offset: 4px; }
+
+  /* ---------- 动画 ---------- */
+  .rise { opacity: 0; transform: translateY(14px); animation: rise .8s cubic-bezier(.2,.7,.2,1) forwards; animation-delay: var(--delay, 0s); }
+  .chip.rise { animation: rise .8s cubic-bezier(.2,.7,.2,1) forwards var(--delay, 0s), float var(--f, 7s) ease-in-out infinite alternate calc(var(--delay, 0s) + .8s); }
+  .swap { animation: swap .4s cubic-bezier(.2,.7,.2,1); }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  @keyframes halo { from { transform: scale(1); opacity: .6; } to { transform: scale(1.9); opacity: 0; } }
+  @keyframes flow { to { stroke-dashoffset: -16; } }
+  @keyframes float { from { transform: translateY(-6px); } to { transform: translateY(6px); } }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+  @keyframes blink { 50% { opacity: .3; } }
+  @keyframes draw { 0% { stroke-dashoffset: 260; } 45%, 80% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -260; } }
+  @keyframes pop { 0% { transform: translateY(4px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(-8px); opacity: 0; } }
+  @keyframes swap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .proto { position: fixed; right: 20px; bottom: 18px; z-index: 10; display: flex; gap: 2px; padding: 4px; border-radius: 999px; background: #fffffff0; border: 1px solid var(--line); box-shadow: 0 6px 20px -10px #0003; font-size: 12px; }
+  .proto button { white-space: nowrap; padding: 6px 11px; border-radius: 999px; color: var(--muted); }
+  .proto button.on { background: var(--ink); color: var(--bg); }
+
+  @media (max-width: 1180px) { .coupon { left: 5%; } .activity { right: 4%; } .reach { right: 6%; } .link { left: 8%; } .orbit { transform: scale(.82); } }
+  @media (max-width: 960px) {
+    .page { display: block; height: auto; min-height: 100svh; padding: 12px; }
+    .scene { height: 300px; }
+    .chip, #links, .form::before { display: none; }
+    .core { left: 74%; top: 46%; }
+    .orbit { transform: scale(.62); }
+    .seal { transform: scale(.8); }
+    .headline { bottom: 24px; left: 24px; }
+    .headline h1 { font-size: 30px; }
+    .brand { top: 22px; left: 24px; }
+    .entry { padding: 40px 12px 80px; }
+    .shell input { font-size: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } .rise { opacity: 1; transform: none; } }
+  .shot .rise, .shot .swap, .shot .chip.rise { animation: none; opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+<main class="page">
+  <section class="scene" id="scene" aria-hidden="true">
+    <canvas id="dots"></canvas>
+    <svg id="links"></svg>
+
+    <div class="brand rise"><span class="mark">序</span><strong>营销工作台</strong></div>
+
+    <div class="core" id="core">
+      <div class="orbit">
+        <svg viewBox="0 0 560 560" fill="none">
+          <g class="spin" style="--d: 120s" stroke="#cfc6b4" stroke-width="1">
+            <circle cx="280" cy="280" r="120" />
+            <circle cx="280" cy="280" r="200" stroke-dasharray="1 7" stroke-linecap="round" stroke-width="1.6" />
+            <circle cx="280" cy="280" r="272" stroke-opacity=".6" />
+          </g>
+          <g class="spin rev" style="--d: 90s" stroke="#c6613f" stroke-opacity=".45" stroke-width="1.2" stroke-linecap="round">
+            <path d="M160 280a120 120 0 0 1 120-120" />
+            <path d="M480 280a200 200 0 0 1-90 167" />
+          </g>
+          <g class="spin" style="--d: 18s"><circle cx="280" cy="160" r="4" fill="#c6613f" /></g>
+          <g class="spin rev" style="--d: 34s"><circle cx="80" cy="280" r="3.5" fill="#c6613f" /><circle cx="80" cy="280" r="9" stroke="#c6613f" stroke-opacity=".3" /></g>
+          <g class="spin" style="--d: 56s"><circle cx="280" cy="552" r="3" fill="#5b7040" /></g>
+        </svg>
+      </div>
+      <div class="seal rise" style="--delay:.15s">序</div>
+    </div>
+
+    <div class="chip coupon rise" style="--delay:.35s; --f:7s" data-link>
+      <div class="stub"><b>¥20</b><small>满100可用</small></div>
+      <div class="body"><strong>新客立减券</strong><span class="k">已领取 <span class="num" id="claimed">1,284</span> 张</span></div>
+    </div>
+
+    <div class="chip activity rise" style="--delay:.5s; --f:8s" data-link>
+      <div class="row"><strong>双十一预热</strong><span class="tag"><i></i>进行中</span></div>
+      <div class="bar"><span id="progress"></span></div>
+      <div class="row k"><span>距开场</span><span class="num" id="countdown">02:14:36</span></div>
+    </div>
+
+    <div class="chip reach rise" style="--delay:.65s; --f:6.5s" data-link>
+      <span class="k">今日触达</span>
+      <div class="big num"><span id="reach">0</span><span class="up">↑ 12.4%</span></div>
+      <svg viewBox="0 0 180 38" preserveAspectRatio="none"><path class="spark" d="M2 32 L22 28 L40 30 L58 22 L76 24 L94 15 L112 18 L130 10 L150 12 L178 4" /></svg>
+    </div>
+
+    <div class="chip link rise" style="--delay:.8s; --f:7.5s" data-link>
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></span>
+      <code>s.xu/a8Kd2</code><span class="plus" id="plus">点击 +1</span>
+    </div>
+
+    <div class="headline rise" style="--delay:.25s"><h1>有序准备，<br><em>从容开场。</em></h1></div>
+  </section>
+
+  <section class="entry">
+    <canvas id="dots2" aria-hidden="true"></canvas>
+    <div class="form rise" id="form-wrap" style="--delay:.2s">
+      <h2 id="title">登录</h2>
+      <p class="sub" id="sub">欢迎回来，继续今天的活动安排。</p>
+      <div id="notice"></div>
+      <form id="form">
+        <label class="field"><span>用户名</span><div class="shell"><input autocomplete="username" placeholder="请输入用户名" /></div></label>
+        <label class="field"><span>密码</span>
+          <div class="shell pwd"><input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" />
+            <button class="eye" type="button" id="eye" aria-label="显示密码"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path id="eye-off" d="m3 3 18 18" style="display:none"/></svg></button>
+          </div>
+        </label>
+        <label class="remember" id="remember"><input type="checkbox" />记住账号</label>
+        <button class="submit" id="submit" type="submit">登录</button>
+      </form>
+      <div class="switch"><span id="tip">还没有账号？</span><button type="button" id="toggle">创建账号</button></div>
+    </div>
+  </section>
+</main>
+
+<svg id="bridge" aria-hidden="true"></svg>
+<nav class="proto">
+  <button data-s="default" class="on">默认</button><button data-s="expired">登录过期</button><button data-s="error">密码错误</button><button data-s="loading">登录中</button><button data-s="register">注册</button>
+</nav>
+
+<script>
+  const $ = id => document.getElementById(id)
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+  const shot = location.hash.includes('shot')
+  if (shot) document.documentElement.classList.add('shot')
+
+  /* ---------- 点阵：左右两块画布共用一套全局坐标，从“序”向外有序点亮 ---------- */
+  const scene = $('scene'), entry = document.querySelector('.entry')
+  const layers = [
+    { el: $('dots'), host: scene, base: [205, 198, 182], alpha: .55 },
+    { el: $('dots2'), host: $('dots2'), base: [214, 208, 194], alpha: .5 }
+  ].map(l => ({ ...l, ctx: l.el.getContext('2d') }))
+  let cx = 0, cy = 0, px = -9999, py = -9999, start = performance.now(), maxR = 1
+  const GAP = 22, PERIOD = 3.4
+  const bursts = [] // 交互触发的额外波纹：{x, y, t, power, size}
+  function resize() {
+    const r = Math.min(devicePixelRatio || 1, 2)
+    layers.forEach(l => {
+      const b = l.host.getBoundingClientRect()
+      l.x = b.left; l.y = b.top; l.w = b.width; l.h = b.height
+      l.el.width = l.w * r; l.el.height = l.h * r; l.ctx.setTransform(r, 0, 0, r, 0, 0)
+    })
+    const c = $('core').getBoundingClientRect()
+    cx = c.left; cy = c.top
+    maxR = Math.hypot(innerWidth, innerHeight)
+    drawLinks(); drawBridge(); draw(shot ? 1.2 : 0)
+  }
+  function intensity(gx, gy, time) {
+    const d = Math.hypot(gx - cx, gy - cy)
+    let I = 0
+    // 三道周期波纹，越过面板边界继续向右扩散
+    for (let k = 0; k < 3; k++) {
+      const r = ((time / PERIOD + k / 3) % 1) * maxR * .8
+      I += Math.exp(-(((d - r) / 26) ** 2)) * (1 - r / (maxR * .8))
+    }
+    for (const b of bursts) {
+      const age = time - b.t, r = age * 260
+      if (age < 0) continue
+      const fade = Math.max(0, 1 - r / b.size)
+      I += Math.exp(-(((Math.hypot(gx - b.x, gy - b.y) - r) / 22) ** 2)) * fade * b.power
+    }
+    I += Math.exp(-((Math.hypot(gx - px, gy - py) / 80) ** 2)) * .9
+    return Math.min(1, I)
+  }
+  function draw(time) {
+    for (let i = bursts.length - 1; i >= 0; i--) if ((time - bursts[i].t) * 260 > bursts[i].size) bursts.splice(i, 1)
+    for (const l of layers) {
+      const { ctx, w, h, base, alpha } = l
+      ctx.clearRect(0, 0, w, h)
+      // 网格按页面坐标对齐，两块画布的点在同一条线上
+      const ox = (((GAP / 2 - l.x) % GAP) + GAP) % GAP, oy = (((GAP / 2 - l.y) % GAP) + GAP) % GAP
+      for (let y = oy; y < h; y += GAP) {
+        for (let x = ox; x < w; x += GAP) {
+          const I = intensity(x + l.x, y + l.y, time)
+          const R = base[0] + (198 - base[0]) * I, G = base[1] + (97 - base[1]) * I, B = base[2] + (63 - base[2]) * I
+          ctx.fillStyle = `rgba(${R|0},${G|0},${B|0},${alpha + I * (1 - alpha)})`
+          ctx.beginPath(); ctx.arc(x, y, 1 + I * 1.8, 0, 6.283); ctx.fill()
+        }
+      }
+    }
+  }
+  const now = () => (performance.now() - start) / 1000
+  function burst(x, y, power = 1, size = 900) { bursts.push({ x, y, t: now(), power, size }) }
+  function loop(t) {
+    if (!reduced && !document.hidden) draw((t - start) / 1000)
+    requestAnimationFrame(loop)
+  }
+  addEventListener('pointermove', e => { px = e.clientX; py = e.clientY })
+  document.addEventListener('pointerleave', () => { px = py = -9999 })
+
+  /* 卡片到中心的虚线连线，流动表示数据在汇聚 */
+  function drawLinks() {
+    const svg = $('links'), s = scene.getBoundingClientRect()
+    svg.setAttribute('viewBox', `0 0 ${s.width} ${s.height}`)
+    const ox = cx - s.left, oy = cy - s.top
+    svg.innerHTML = [...document.querySelectorAll('[data-link]')].map(el => {
+      const b = el.getBoundingClientRect()
+      const x = b.left - s.left + b.width / 2, y = b.top - s.top + b.height / 2
+      return `<path d="M${x} ${y} Q${(x + ox) / 2} ${(y + oy) / 2 - 30} ${ox} ${oy}" />`
+    }).join('')
+  }
+  /* “序”到登录卡片的连线：跨过面板边界，把左右连成一体 */
+  function drawBridge() {
+    const svg = $('bridge'), f = $('form-wrap').getBoundingClientRect()
+    if (innerWidth <= 960) { svg.innerHTML = ''; return }
+    svg.setAttribute('viewBox', `0 0 ${innerWidth} ${innerHeight}`)
+    const ex = f.left, ey = f.top + f.height / 2
+    const d = `M${cx + 46} ${cy} C${cx + 180} ${cy}, ${ex - 160} ${ey}, ${ex - 6} ${ey}`
+    svg.innerHTML = `<path class="track" d="${d}" /><path class="flow" id="bridge-flow" d="${d}" /><circle r="3" fill="#c6613f"><animateMotion dur="2.6s" repeatCount="indefinite" path="${d}" /></circle>`
+  }
+  new ResizeObserver(resize).observe(document.body)
+  requestAnimationFrame(loop)
+
+  /* 表单交互与左侧联动：聚焦从“序”发出波纹，输入时从卡片发出细波纹，提交时强波纹 */
+  const anchor = () => { const f = $('form-wrap').getBoundingClientRect(); return [f.left, f.top + f.height / 2] }
+  document.querySelectorAll('#form input:not([type=checkbox])').forEach(inp => {
+    inp.addEventListener('focus', () => { burst(cx, cy, 1, 1400); pulseSeal() })
+    inp.addEventListener('input', () => { const [x, y] = anchor(); burst(x, y, .55, 420) })
+  })
+  function pulseSeal() { const s = document.querySelector('.seal'); s.classList.remove('beat', 'rise'); void s.offsetWidth; s.classList.add('beat') }
+
+  /* ---------- 卡片数据：计数、倒计时、进度 ---------- */
+  const fmt = n => n.toLocaleString('en-US')
+  let reach = 0, claimed = 1284, left = 2 * 3600 + 14 * 60 + 36
+  const target = 12486
+  setTimeout(() => { $('progress').style.width = '68%' }, shot ? 0 : 700)
+  if (shot) { $('reach').textContent = fmt(target); $('progress').style.transition = 'none' }
+  else {
+    const t0 = performance.now()
+    ;(function count(now) {
+      const p = Math.min(1, (now - t0 - 600) / 1800)
+      if (p > 0) $('reach').textContent = fmt(Math.round(target * (1 - (1 - p) ** 3)))
+      if (p < 1) requestAnimationFrame(count)
+      else reach = target
+    })(t0)
+    setInterval(() => {
+      left = Math.max(0, left - 1)
+      const h = String(left / 3600 | 0).padStart(2, '0'), m = String(left % 3600 / 60 | 0).padStart(2, '0'), s = String(left % 60).padStart(2, '0')
+      $('countdown').textContent = `${h}:${m}:${s}`
+    }, 1000)
+    setInterval(() => {
+      claimed += 1 + (Math.random() * 3 | 0); $('claimed').textContent = fmt(claimed)
+      if (reach) { reach += 3 + (Math.random() * 9 | 0); $('reach').textContent = fmt(reach) }
+      const p = $('plus'); p.classList.remove('pop'); void p.offsetWidth; p.classList.add('pop')
+    }, 2400)
+  }
+
+  /* ---------- 表单状态（原型切换用） ---------- */
+  $('eye').onclick = () => { const show = $('password').type === 'password'; $('password').type = show ? 'text' : 'password'; $('eye-off').style.display = show ? '' : 'none' }
+  const ic = {
+    info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></svg>'
+  }
+  function setState(s, animate = true) {
+    document.querySelectorAll('.proto button').forEach(b => b.classList.toggle('on', b.dataset.s === s))
+    const reg = s === 'register'
+    $('title').textContent = reg ? '创建工作空间' : '登录'
+    $('sub').textContent = reg ? '几步完成设置，开始筹备第一场活动。' : '欢迎回来，继续今天的活动安排。'
+    $('remember').style.display = reg ? 'none' : ''
+    $('tip').textContent = reg ? '已有账号？' : '还没有账号？'
+    $('toggle').textContent = reg ? '返回登录' : '创建账号'
+    $('notice').innerHTML = s === 'expired' ? `<div class="notice info">${ic.info}登录已过期，请重新登录。</div>`
+      : s === 'error' ? `<div class="notice error">${ic.error}用户名或密码不正确，请重新输入。</div>` : ''
+    $('submit').disabled = s === 'loading'
+    $('submit').innerHTML = s === 'loading' ? '<span class="spinner"></span>正在登录…' : (reg ? '创建工作空间' : '登录')
+    if (animate) { const f = $('form-wrap'); f.classList.remove('rise', 'swap'); void f.offsetWidth; f.classList.add('swap') }
+    drawBridge()
+  }
+  document.querySelectorAll('.proto button').forEach(b => b.onclick = () => setState(b.dataset.s))
+  $('toggle').onclick = () => setState($('title').textContent === '登录' ? 'register' : 'default')
+  $('form').onsubmit = e => { e.preventDefault(); const [x, y] = anchor(); burst(x, y, 1, 1600); setTimeout(() => { burst(cx, cy, 1, 1600); pulseSeal() }, 500); setState('loading'); setTimeout(() => setState('default'), 1600) }
+  const hs = location.hash.match(/state=(\w+)/); if (hs) setState(hs[1], false)
+</script>
+</body>
+</html>

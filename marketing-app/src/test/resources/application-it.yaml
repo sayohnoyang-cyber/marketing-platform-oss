@@ -1,0 +1,21 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration
+  sql:
+    init:
+      mode: never
+
+marketing:
+  redis:
+    enabled: true
+  outbox:
+    publish-enabled: true
+  offer:
+    grant-batch-scan-enabled: false
+  mq:
+    enabled: false
+  shortlink:
+    public-base-url: http://127.0.0.1:19110
+    bloom-expected-insertions: 1000
+    bloom-false-probability: 0.01

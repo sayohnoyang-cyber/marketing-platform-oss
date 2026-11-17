@@ -1,0 +1,40 @@
+services:
+  mysql:
+    image: mysql:8.0.36
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MYSQL_DATABASE: marketing
+      TZ: Asia/Shanghai
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    volumes:
+      - marketing-mysql:/var/lib/mysql
+      - ./marketing-app/src/main/resources/db/V001__init.sql:/docker-entrypoint-initdb.d/V001__init.sql:ro
+      - ./marketing-app/src/main/resources/db/V002__claim_outbox_task.sql:/docker-entrypoint-initdb.d/V002__claim_outbox_task.sql:ro
+      - ./marketing-app/src/main/resources/db/V003__claim_lease.sql:/docker-entrypoint-initdb.d/V003__claim_lease.sql:ro
+      - ./marketing-app/src/main/resources/db/V004__campaign.sql:/docker-entrypoint-initdb.d/V004__campaign.sql:ro
+      - ./marketing-app/src/main/resources/db/V005__allocation_main_link.sql:/docker-entrypoint-initdb.d/V005__allocation_main_link.sql:ro
+      - ./marketing-app/src/main/resources/db/V006__campaign_operations.sql:/docker-entrypoint-initdb.d/V006__campaign_operations.sql:ro
+      - ./marketing-app/src/main/resources/db/V007__link_name.sql:/docker-entrypoint-initdb.d/V007__link_name.sql:ro
+      - ./marketing-app/src/main/resources/db/V008__simple_workspace_activity.sql:/docker-entrypoint-initdb.d/V008__simple_workspace_activity.sql:ro
+      - ./marketing-app/src/main/resources/db/V009__refund_amount_attendance.sql:/docker-entrypoint-initdb.d/V009__refund_amount_attendance.sql:ro
+      - ./marketing-app/src/main/resources/db/V010__external_link_activity.sql:/docker-entrypoint-initdb.d/V010__external_link_activity.sql:ro
+
+  redis:
+    image: redis:7.2
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.1.4
+    ports:
+      - "${ROCKETMQ_NAMESRV_PORT:-9876}:9876"
+    command: sh mqnamesrv
+
+volumes:
+  marketing-mysql:

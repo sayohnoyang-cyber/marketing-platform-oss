@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.sayohno.marketing.campaign.dao.mapper.CampaignLinkListMapper">
+  <!-- 只读列表投影：主链、共享短码的渠道和普通短链分别成行；每个分支限定工作空间。 -->
+  <sql id="entries">
+    SELECT CONCAT('m-', a.id) entry_key, 'MAIN' kind, a.name name,
+      a.id activity_id, a.name activity_name, NULL channel_id, l.id link_id,
+      l.full_short_url, l.origin_url origin, l.valid_date, (a.main_enabled = 1) on_flag,
+      (l.id IS NOT NULL AND l.enable_status = 0 AND (l.valid_date IS NULL OR l.valid_date &gt; #{q.now})) main_ready,
+      (a.main_enabled = 1 AND a.status = 1 AND a.end_time &gt; #{q.now} AND l.id IS NOT NULL
+        AND l.enable_status = 0 AND (l.valid_date IS NULL OR l.valid_date &gt; #{q.now})) effective_flag,
+      a.status activity_status, a.start_time, a.end_time, 'direct' source, a.id sort_id
+    FROM campaign_activity a LEFT JOIN link l ON l.id = a.main_link_id AND l.merchant_id = a.merchant_id AND l.del_time = 0 AND l.del_flag = 0
+    WHERE a.merchant_id = #{q.merchantId}
+    UNION ALL
+    SELECT CONCAT('c-', ch.id), 'CHANNEL', ch.name, a.id, a.name, ch.id, l.id,
+      l.full_short_url, l.origin_url, l.valid_date, (ch.status = 1),
+      (a.main_enabled = 1 AND l.id IS NOT NULL AND l.enable_status = 0 AND (l.valid_date IS NULL OR l.valid_date &gt; #{q.now})),
+      (ch.status = 1 AND a.main_enabled = 1 AND a.status = 1 AND a.end_time &gt; #{q.now}
+        AND l.id IS NOT NULL AND l.enable_status = 0 AND (l.valid_date IS NULL OR l.valid_date &gt; #{q.now})),
+      a.status, a.start_time, a.end_time, ch.channel_code, ch.id
+    FROM campaign_channel ch JOIN campaign_activity a ON a.id = ch.activity_id AND a.merchant_id = #{q.merchantId}
+    LEFT JOIN link l ON l.id = a.main_link_id AND l.merchant_id = a.merchant_id AND l.del_time = 0 AND l.del_flag = 0
+    WHERE ch.merchant_id = #{q.merchantId}
+    UNION ALL
+    SELECT CONCAT('p-', l.id), 'PLAIN', COALESCE(l.name, '普通短链'), a.id, a.name, NULL, l.id,
+      l.full_short_url, l.origin_url, l.valid_date, (l.enable_status = 0), 1,
+      (l.enable_status = 0 AND (l.valid_date IS NULL OR l.valid_date &gt; #{q.now})),
+      NULL, NULL, NULL, NULL, l.id
+    FROM link l LEFT JOIN campaign_activity a ON a.id = l.activity_id AND a.merchant_id = l.merchant_id
+    WHERE l.merchant_id = #{q.merchantId} AND l.del_time = 0 AND l.del_flag = 0
+      AND NOT EXISTS (SELECT 1 FROM campaign_activity m WHERE m.merchant_id = #{q.merchantId} AND m.main_link_id = l.id)
+      AND NOT EXISTS (SELECT 1 FROM campaign_channel c WHERE c.merchant_id = #{q.merchantId} AND c.link_id = l.id)
+  </sql>
+  <sql id="filters">
+    <where>
+      <if test="q.activityId != null">AND r.activity_id = #{q.activityId}</if>
+      <if test="q.unassigned">AND r.activity_id IS NULL</if>
+      <if test="q.word != null">AND (LOWER(r.name) LIKE #{q.word} ESCAPE '!' OR LOWER(r.activity_name) LIKE #{q.word} ESCAPE '!' OR LOWER(r.full_short_url) LIKE #{q.word} ESCAPE '!')</if>
+      <if test="q.state == 'ACTIVE'">AND r.effective_flag = 1</if>
+      <if test="q.state == 'INACTIVE'">AND COALESCE(r.effective_flag, 0) = 0</if>
+    </where>
+  </sql>
+  <select id="count" resultType="long">SELECT COUNT(*) FROM (<include refid="entries"/>) r <include refid="filters"/></select>
+  <select id="page" resultType="com.sayohno.marketing.campaign.web.dto.LinkListEntry">
+    SELECT r.* FROM (<include refid="entries"/>) r <include refid="filters"/>
+    ORDER BY r.sort_id DESC, r.entry_key ASC LIMIT #{size} OFFSET #{offset}
+  </select>
+  <select id="totals" resultType="map">
+    SELECT COUNT(*) total, COALESCE(SUM(CASE WHEN effective_flag = 1 THEN 1 ELSE 0 END), 0) enabled
+    FROM (<include refid="entries"/>) r
+  </select>
+  <!-- 顶部统计沿用“每条短链独立去重后相加”，不会把同一主链的渠道重复加到汇总。 -->
+  <select id="jumpSegments" resultType="map">
+    SELECT s.activity_id, s.activity_name, SUM(s.visits) visits FROM (
+      SELECT l.id, COALESCE(m.id, b.id, a.id) activity_id, COALESCE(m.name, b.name, a.name, '未归属活动') activity_name,
+        COUNT(DISTINCT logs.visitor_id) visits
+      FROM link l
+      LEFT JOIN campaign_activity m ON m.main_link_id = l.id AND m.merchant_id = l.merchant_id
+      LEFT JOIN (SELECT link_id, MIN(activity_id) activity_id FROM campaign_channel WHERE merchant_id = #{merchantId} GROUP BY link_id) ch ON ch.link_id = l.id AND m.id IS NULL
+      LEFT JOIN campaign_activity b ON b.id = ch.activity_id AND b.merchant_id = l.merchant_id
+      LEFT JOIN campaign_activity a ON a.id = l.activity_id AND a.merchant_id = l.merchant_id
+      LEFT JOIN link_access_log logs ON logs.link_id = l.id AND logs.visitor_id != 'anonymous'
+      WHERE l.merchant_id = #{merchantId} AND l.del_time = 0 AND l.del_flag = 0
+      GROUP BY l.id, COALESCE(m.id, b.id, a.id), COALESCE(m.name, b.name, a.name, '未归属活动')
+    ) s GROUP BY s.activity_id, s.activity_name ORDER BY visits DESC, s.activity_id DESC
+  </select>
+  <select id="entryVisits" resultType="map">
+    SELECT v.activity_id, v.channel_id, COUNT(DISTINCT v.visitor_id) visits
+    FROM campaign_visit v JOIN campaign_activity a ON a.id = v.activity_id AND a.merchant_id = #{merchantId}
+    WHERE v.valid_flag = 1 AND v.visitor_id IS NOT NULL AND v.visitor_id != '' AND v.visitor_id NOT IN ('landing', 'anonymous')
+      AND v.activity_id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    GROUP BY v.activity_id, v.channel_id
+  </select>
+  <select id="plainVisits" resultType="map">
+    SELECT l.id, COUNT(DISTINCT logs.visitor_id) visits FROM link l
+    LEFT JOIN link_access_log logs ON logs.link_id = l.id AND logs.visitor_id != 'anonymous'
+    WHERE l.merchant_id = #{merchantId} AND l.del_time = 0 AND l.del_flag = 0
+      AND l.id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    GROUP BY l.id
+  </select>
+  <select id="options" resultType="map">
+    SELECT id, name FROM campaign_activity WHERE merchant_id = #{merchantId}
+    <if test="word != null">AND LOWER(name) LIKE #{word} ESCAPE '!'</if>
+    ORDER BY id DESC LIMIT #{size} OFFSET #{offset}
+  </select>
+  <select id="spotlight" resultType="com.sayohno.marketing.campaign.web.dto.ActivitySpotlight">
+    SELECT a.id, a.name, a.status, a.warmup_start_time, a.start_time, a.end_time, ca.quantity, ca.claimed_count claimed
+    FROM campaign_activity a LEFT JOIN campaign_offer cc ON cc.activity_id = a.id
+    LEFT JOIN offer_inventory ca ON ca.id = cc.inventory_id AND ca.merchant_id = a.merchant_id
+    WHERE a.merchant_id = #{merchantId}
+    ORDER BY CASE WHEN a.status = 1 AND a.start_time &lt;= #{now} AND a.end_time &gt; #{now} THEN 0
+      WHEN a.status = 1 AND a.start_time &gt; #{now} THEN 1 WHEN a.status = 0 THEN 2 WHEN a.status = 5 THEN 3 ELSE 9 END, a.id DESC LIMIT 1
+  </select>
+</mapper>

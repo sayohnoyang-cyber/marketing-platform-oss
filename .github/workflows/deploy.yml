@@ -1,0 +1,106 @@
+# Example production deploy workflow. It does not hard-code a server address.
+# Configure GitHub Actions secrets: DEPLOY_HOST, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS.
+# Change the SSH User (currently "root") to a dedicated deploy account if you can.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'sayohnoyang-cyber/marketing-platform-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      DEPLOY_DIR: /opt/marketing-platform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # 测试依赖 MySQL/Redis 容器，这里只打包；测试请在本地或单独的 CI 里跑
+      - name: Build backend jar
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -ntp -DskipTests package
+          ls -lh marketing-app/target/*.jar
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: console-vue/package-lock.json
+
+      - name: Build frontend
+        working-directory: console-vue
+        env:
+          VITE_PUBLIC_SHORTLINK_ORIGIN: http://${{ secrets.DEPLOY_HOST }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble release bundle
+        run: |
+          mkdir -p bundle/db
+          jar=$(ls marketing-app/target/marketing-app-*.jar | grep -v '\.original$' | head -1)
+          cp "$jar" bundle/app.jar
+          cp -r console-vue/dist bundle/dist
+          cp marketing-app/src/main/resources/db/V*.sql bundle/db/
+          cp deploy/remote-deploy.sh bundle/remote-deploy.sh
+          cp deploy/redis-cutover.sh bundle/redis-cutover.sh
+          echo "${GITHUB_SHA}" > bundle/sha
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host deploy-target
+            HostName ${{ secrets.DEPLOY_HOST }}
+            User root
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            ServerAliveInterval 30
+          CFG
+
+      - name: Upload bundle
+        run: |
+          # 先把当前线上 jar 放进上传目录，rsync 只传差异，减少跨境上传量
+          ssh deploy-target "mkdir -p $DEPLOY_DIR/releases/incoming && [ -s $DEPLOY_DIR/releases/incoming/app.jar ] || cp $DEPLOY_DIR/app/app.jar $DEPLOY_DIR/releases/incoming/app.jar"
+          for i in 1 2 3; do
+            rsync -az --partial --delete --timeout=120 bundle/ deploy-target:$DEPLOY_DIR/releases/incoming/ && break
+            echo "上传失败，重试 $i"; sleep 10
+            [ "$i" = 3 ] && exit 1
+          done
+
+      - name: Deploy on server
+        run: ssh deploy-target "bash $DEPLOY_DIR/releases/incoming/remote-deploy.sh deploy ${GITHUB_SHA}"
+
+      - name: Health check
+        run: |
+          host=${{ secrets.DEPLOY_HOST }}
+          for i in $(seq 1 12); do
+            page=$(curl -fsS --max-time 10 "http://$host/" || true)
+            api=$(curl -fsS --max-time 10 "http://$host/api/health" || true)
+            if echo "$page" | grep -q '<div id="app"' && echo "$api" | grep -q '"UP"'; then
+              echo "站点和接口正常"; exit 0
+            fi
+            sleep 10
+          done
+          echo "健康检查失败"; exit 1
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

@@ -1,0 +1,72 @@
+server:
+  port: ${SERVER_PORT:9100}
+
+spring:
+  application:
+    name: marketing-platform
+  main:
+    allow-bean-definition-overriding: false
+  autoconfigure:
+    exclude:
+      - org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/marketing?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT:1s}
+  jackson:
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  mapper-locations: classpath*:/mapper/**/*.xml
+  global-config:
+    db-config:
+      id-type: assign_id
+
+marketing:
+  redis:
+    enabled: true
+  session:
+    ttl: ${SESSION_TTL:30m}
+  mq:
+    enabled: false
+    name-server: ${ROCKETMQ_NAMESRV:127.0.0.1:9876}
+    topic: ${ROCKETMQ_TOPIC:marketing-event}
+  web:
+    cors-allowed-origins:
+      - http://127.0.0.1:5173
+      - http://localhost:5173
+      - http://127.0.0.1:5174
+      - http://localhost:5174
+    console-base-url: ${CONSOLE_BASE_URL:http://127.0.0.1:5173}
+  shortlink:
+    bloom-expected-insertions: ${SHORTLINK_BLOOM_EXPECTED:100000000}
+    bloom-false-probability: ${SHORTLINK_BLOOM_FPP:0.001}
+    public-base-url: ${SHORTLINK_PUBLIC_BASE_URL:http://127.0.0.1:9100}
+    trust-forwarded: ${SHORTLINK_TRUST_FORWARDED:false}
+  outbox:
+    publish-enabled: ${OUTBOX_PUBLISH_ENABLED:true}
+    max-retries: ${OUTBOX_MAX_RETRIES:8}
+  offer:
+    grant-batch-scan-enabled: ${OFFER_GRANT_BATCH_SCAN_ENABLED:true}
+    grant-batch-lease: ${OFFER_GRANT_BATCH_LEASE:2m}
+    grant-batch-row-delay: ${OFFER_GRANT_BATCH_ROW_DELAY:0s}
+    grant-batch-dir: ${OFFER_GRANT_BATCH_DIR:}
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%X{requestId}] %logger{36} - %msg%n"
