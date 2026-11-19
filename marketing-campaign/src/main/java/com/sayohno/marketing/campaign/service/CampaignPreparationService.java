@@ -36,16 +36,17 @@ public class CampaignPreparationService {
     private final CampaignMessageService messages;
     private final CampaignForecastService forecasts;
     private final CampaignRateLimitService rateLimits;
+    private final CampaignFlowService flow;
 
     public CampaignPreparationService(CampaignService campaigns, CampaignOperationStore store, CampaignOperationMapper operations,
             CampaignConfigurationService configuration, CampaignOfferMapper coupons, OfferPlanService templates,
             OfferInventoryService allocations, LinkDirectoryService links, RedirectService redirects, CampaignPageCache pages,
             CapacityBaselineService capacity, MarketingProperties properties, CampaignMessageService messages,
-            CampaignForecastService forecasts, CampaignRateLimitService rateLimits, Clock clock) {
+            CampaignForecastService forecasts, CampaignRateLimitService rateLimits, CampaignFlowService flow, Clock clock) {
         this.campaigns = campaigns; this.store = store; this.operations = operations; this.configuration = configuration;
         this.coupons = coupons; this.templates = templates; this.allocations = allocations; this.links = links;
         this.redirects = redirects; this.pages = pages; this.capacity = capacity; this.properties = properties;
-        this.messages = messages; this.forecasts = forecasts; this.rateLimits = rateLimits; this.clock = clock;
+        this.messages = messages; this.forecasts = forecasts; this.rateLimits = rateLimits; this.flow = flow; this.clock = clock;
     }
 
     /** Synchronous bounded application checks. Each task result is persisted independently. */
@@ -93,7 +94,7 @@ public class CampaignPreparationService {
         });
         task(run, data, tasks, "offer", "优惠券展示规则缓存", () -> coupon == null ? result("FAILED", "尚未选券") : templates.warmOffer(coupon.getPlanId()));
         task(run, data, tasks, "stock", "库存缓存预热与一致性检查", () -> coupon == null || coupon.getInventoryId() == null ? result("FAILED", "尚未投放") : allocations.warmStock(coupon.getInventoryId()));
-        task(run, data, tasks, "page", "活动热点读缓存准备", () -> pages.warm(campaigns.requireOwned(activityId)));
+        task(run, data, tasks, "page", "活动热点读缓存准备", () -> flow.warmPageCache(activityId));
         task(run, data, tasks, "capacity", "开场与消息消费容量校验", () -> capacityCheck(activityId, decision));
         data.put("finishedAt", LocalDateTime.now(clock));
         long passed = tasks.stream().filter(row -> "SUCCEEDED".equals(row.get("status"))).count();

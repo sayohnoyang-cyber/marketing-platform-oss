@@ -143,6 +143,7 @@ public class CampaignFlowService {
         catch (DataIntegrityViolationException exception) { throw new BizException(ErrorCode.CONFLICT, "渠道标识或创建请求已被占用，请检查后重试"); }
         channel.setLinkId(ensureMain(activity).getId());
         channelMapper.updateById(channel);
+        pageCache.evict(activityId);
         return channel;
     }
 
@@ -169,9 +170,11 @@ public class CampaignFlowService {
             OfferInventory allocation = allocationService.allocate(coupon.getPlanId(), quantity, maxClaimsPerUser, idempotencyKey);
             coupon.setInventoryId(allocation.getId());
             couponMapper.updateById(coupon);
+            pageCache.evict(activityId);
             return coupon;
         }
         allocationService.adjust(coupon.getInventoryId(), quantity, maxClaimsPerUser, idempotencyKey, beforeStart, beforeStart);
+        pageCache.evict(activityId);
         return couponMapper.selectById(coupon.getId());
     }
 
@@ -183,6 +186,7 @@ public class CampaignFlowService {
         }
         channel.setStatus(enabled ? 1 : 0);
         channelMapper.updateById(channel);
+        pageCache.evict(activityId);
         return channel;
     }
 
@@ -239,16 +243,158 @@ public class CampaignFlowService {
         return visit(activityId, channelCode, visitorId, true);
     }
 
+    /**
+     * 落地页访问与状态轮询：优先从 CampaignPageCache 读取活动、主链、渠道与券展示快照，
+     * /status（recordVisit=false）在缓存命中时不穿透查询数据库。
+     */
     public Map<String, Object> visit(long activityId, String channelCode, String visitorId, boolean recordVisit) {
-        CampaignActivity activity = campaignService.requireReadable(activityId);
-        if (activity.getMainLinkId() == null) {
+        CampaignPageCache.PageSnapshot snapshot = pageCache.getOrLoad(activityId, () -> loadPageSnapshot(activityId));
+        if (snapshot.mainLinkId() == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "活动还没有主链");
         }
-        Link link = linkDirectoryService.findExisting(activity.getMainLinkId());
-        if (link == null) {
+        if (snapshot.mainLinkEnableStatus() == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "主链不存在");
         }
-        return entry(link.getShortUri(), channelCode, visitorId, recordVisit);
+        return renderFromSnapshot(snapshot, channelCode, visitorId, recordVisit);
+    }
+
+    public Map<String, Object> warmPageCache(long activityId) {
+        campaignService.requireOwned(activityId);
+        return pageCache.warm(activityId, () -> loadPageSnapshot(activityId));
+    }
+
+    private CampaignPageCache.PageSnapshot loadPageSnapshot(long activityId) {
+        CampaignActivity activity = campaignService.requireReadable(activityId);
+        Integer linkEnableStatus = null;
+        if (activity.getMainLinkId() != null) {
+            Link link = linkDirectoryService.findExisting(activity.getMainLinkId());
+            if (link != null) {
+                linkEnableStatus = link.getEnableStatus() == null ? 0 : link.getEnableStatus();
+            }
+        }
+        CampaignOffer linked = couponMapper.selectOne(Wrappers.<CampaignOffer>lambdaQuery()
+                .eq(CampaignOffer::getActivityId, activityId));
+        Long planId = null;
+        Long inventoryId = null;
+        Integer quantity = null;
+        Integer claimed = null;
+        Integer maxClaimsPerUser = null;
+        Map<String, Object> publicOffer = Map.of();
+        if (linked != null) {
+            planId = linked.getPlanId();
+            publicOffer = templateService.publicOffer(linked.getPlanId(), activity.getMerchantId());
+            if (linked.getInventoryId() != null) {
+                inventoryId = linked.getInventoryId();
+                OfferInventory allocation = allocationService.find(inventoryId);
+                quantity = allocation.getQuantity();
+                claimed = allocation.getClaimedCount();
+                maxClaimsPerUser = allocation.getMaxClaimsPerUser();
+            }
+        }
+        Map<String, CampaignPageCache.ChannelSnapshot> channelMap = new LinkedHashMap<>();
+        for (CampaignChannel ch : channelMapper.selectList(Wrappers.<CampaignChannel>lambdaQuery()
+                .eq(CampaignChannel::getActivityId, activityId))) {
+            channelMap.put(ch.getChannelCode(), new CampaignPageCache.ChannelSnapshot(
+                    ch.getId(), ch.getChannelCode(), ch.getName(), ch.getStatus() == null ? 0 : ch.getStatus()));
+        }
+        return new CampaignPageCache.PageSnapshot(
+                activity.getId(), activity.getMerchantId(), activity.getName(),
+                activity.getStatus(), activity.getVersion(),
+                activity.getWarmupStartTime(), activity.getStartTime(), activity.getEndTime(),
+                activity.getMainLinkId(), activity.getMainEnabled(), linkEnableStatus,
+                planId, inventoryId, quantity, claimed, maxClaimsPerUser,
+                publicOffer, channelMap);
+    }
+
+    private Map<String, Object> renderFromSnapshot(CampaignPageCache.PageSnapshot snapshot, String channelCode,
+                                                   String visitorId, boolean recordVisit) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        ActivityPhase phase = ActivityPhase.of(snapshot.status(), snapshot.warmupStartTime(),
+                snapshot.startTime(), snapshot.endTime(), now);
+        String blocked = snapshotBlock(snapshot, phase, channelCode);
+        Long channelId = null;
+        String source = "DIRECT";
+        if (blocked == null && channelCode != null && !channelCode.isBlank()) {
+            CampaignPageCache.ChannelSnapshot ch = snapshot.channels() == null ? null : snapshot.channels().get(channelCode);
+            if (ch == null) {
+                blocked = "渠道不存在";
+            } else if (ch.status() != 1) {
+                blocked = "渠道已停用";
+            } else {
+                channelId = ch.id();
+                source = ch.name();
+            }
+        }
+        Integer quantity = snapshot.quantity();
+        Integer claimed = snapshot.claimed();
+        if (snapshot.inventoryId() != null && quantity != null) {
+            Integer liveRemaining = pageCache.readLiveRemaining(snapshot.inventoryId());
+            if (liveRemaining != null) {
+                claimed = Math.max(0, quantity - liveRemaining);
+            }
+        }
+        String actionValue = snapshotAction(phase, blocked, snapshot.inventoryId(), quantity, claimed);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("activityId", snapshot.activityId());
+        body.put("name", snapshot.name());
+        body.put("phase", phase.name());
+        body.put("serverTime", now.toString());
+        body.put("startTime", snapshot.startTime().toString());
+        body.put("endTime", snapshot.endTime().toString());
+        body.put("source", blocked == null ? source : "UNAVAILABLE");
+        body.put("action", actionValue);
+        body.put("reason", blocked == null ? "" : blocked);
+        if (snapshot.planId() != null) {
+            body.put("planId", snapshot.planId());
+            if (snapshot.publicOffer() != null) {
+                body.putAll(snapshot.publicOffer());
+            }
+            if (snapshot.inventoryId() != null) {
+                body.put("quantity", quantity);
+                body.put("claimed", claimed);
+                body.put("maxClaimsPerUser", snapshot.maxClaimsPerUser());
+            }
+        }
+        if (recordVisit && blocked == null && !"ENDED".equals(actionValue)) {
+            String raw = UUID.randomUUID().toString().replace("-", "");
+            CampaignVisit visit = new CampaignVisit();
+            visit.setVisitTokenHash(RequestHashes.sha256(raw));
+            visit.setActivityId(snapshot.activityId());
+            visit.setChannelId(channelId);
+            visit.setVisitorId(visitorId);
+            visit.setVisitedAt(now);
+            visit.setExpireAt(now.plusMinutes(30));
+            visit.setValidFlag(1);
+            visitMapper.insert(visit);
+            body.put("credential", raw);
+            body.put("credentialExpireAt", visit.getExpireAt().toString());
+        }
+        return body;
+    }
+
+    private static String snapshotBlock(CampaignPageCache.PageSnapshot snapshot, ActivityPhase phase, String channelCode) {
+        if (channelCode != null && !channelCode.isBlank() && !channelCode.matches("[A-Za-z0-9]{1,32}")) {
+            return "渠道参数不合法";
+        }
+        boolean mainOff = snapshot.mainLinkId() != null && (snapshot.mainEnabled() == null || snapshot.mainEnabled() != 1
+                || snapshot.mainLinkEnableStatus() == null || snapshot.mainLinkEnableStatus() != 0);
+        if (mainOff) return "主链已停用";
+        if (phase == ActivityPhase.OFFLINE) return "活动已下线";
+        if (phase == ActivityPhase.CANCELLED) return "活动已终止";
+        if (phase == ActivityPhase.PAUSED) return "活动已暂停";
+        if (phase == ActivityPhase.DRAFT) return "活动还没发布";
+        return null;
+    }
+
+    private static String snapshotAction(ActivityPhase phase, String blocked, Long inventoryId, Integer quantity, Integer claimed) {
+        if (blocked != null) return "UNAVAILABLE";
+        if (phase == ActivityPhase.ENDED) return "ENDED";
+        if (phase == ActivityPhase.WARMUP) return "RESERVE";
+        if (phase == ActivityPhase.LIVE) {
+            if (inventoryId == null || quantity == null || claimed == null) return "SOLD_OUT";
+            return claimed < quantity ? "CLAIM" : "SOLD_OUT";
+        }
+        return "UNAVAILABLE";
     }
 
     public Map<String, Object> mainLink(long activityId) {
@@ -490,6 +636,7 @@ public class CampaignFlowService {
             recordConversion("claim:" + voucherId, "CLAIM", intent.getActivityId(),
                     intent.getChannelId(), intent.getVisitId(), intent.getUserId(), voucherId, null, LocalDateTime.now(clock));
         });
+        pageCache.evict(intent.getActivityId());
     }
 
     private PreparedClaim prepareClaim(long userId, long activityId, long templateId, String requestId, String credential) {
@@ -532,6 +679,7 @@ public class CampaignFlowService {
             recordConversion("claim:" + voucherId, "CLAIM", activityId, visit.getChannelId(), visit.getId(),
                     userId, voucherId, null, LocalDateTime.now(clock));
         });
+        pageCache.evict(activityId);
     }
 
     private static Map<String, Object> ticketView(VoucherClaimService.ClaimReceipt ticket) {

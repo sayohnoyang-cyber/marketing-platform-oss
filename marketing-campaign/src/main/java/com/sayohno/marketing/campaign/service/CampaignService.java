@@ -45,6 +45,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
     private final LinkDirectoryService linkDirectoryService;
     private final MerchantAccessService merchantAccessService;
     private final CampaignReservationMapper reservationMapper;
+    private final CampaignPageCache pageCache;
     private final Clock clock;
 
     public CampaignService(CampaignActivityMapper activityMapper,
@@ -55,6 +56,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
                            LinkDirectoryService linkDirectoryService,
                            MerchantAccessService merchantAccessService,
                            CampaignReservationMapper reservationMapper,
+                           CampaignPageCache pageCache,
                            Clock clock) {
         this.activityMapper = activityMapper;
         this.couponMapper = couponMapper;
@@ -64,6 +66,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         this.linkDirectoryService = linkDirectoryService;
         this.merchantAccessService = merchantAccessService;
         this.reservationMapper = reservationMapper;
+        this.pageCache = pageCache;
         this.clock = clock;
     }
 
@@ -258,6 +261,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         if (activity.getMainLinkId() != null) {
             linkDirectoryService.updateLink(activity.getMainLinkId(), null, end, null);
         }
+        pageCache.evict(activityId);
         return activity;
     }
 
@@ -292,6 +296,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         row.setStoreCode(template.getStoreCode());
         row.setSortOrder(0);
         couponMapper.insert(row);
+        pageCache.evict(activityId);
         return row;
     }
 
@@ -303,6 +308,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         activity.setMainLinkId(linkId);
         activity.setMainEnabled(1);
         activityMapper.updateById(activity);
+        pageCache.evict(activityId);
         return activity;
     }
 
@@ -314,6 +320,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         activity.setMainEnabled(enabled ? 1 : 0);
         activityMapper.updateById(activity);
         linkDirectoryService.updateLink(activity.getMainLinkId(), null, activity.getEndTime(), enabled ? 0 : 1);
+        pageCache.evict(activityId);
         return activity;
     }
 
@@ -335,6 +342,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         if (updated != 1) {
             throw new BizException(ErrorCode.CONFLICT, "活动已更新，请刷新后再保存");
         }
+        pageCache.evict(activityId);
     }
 
     public void saveBudget(long activityId, java.math.BigDecimal budget) {
@@ -599,6 +607,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         }
         activity.setStatus(status);
         activity.setVersion(nextVersion);
+        pageCache.evict(activity.getId());
         return activity;
     }
 

@@ -326,6 +326,37 @@ class ActivityFlowTest {
     }
 
     @Test
+    void pageCacheServesStatusAndInvalidatesOnChannelOrActivityChange() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "缓存测试券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("读缓存测试", now.minusHours(2), now.minusMinutes(5), now.plusDays(1));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        flowService.place(activity.getId(), 5, 1, "cache-alloc", new BigDecimal("50.00"));
+        CampaignChannel channel = flowService.addChannel(activity.getId(), "公众号", "cache-ch");
+        campaignService.publish(activity.getId());
+
+        flowService.warmPageCache(activity.getId());
+        Map<String, Object> status1 = flowService.visit(activity.getId(), channel.getChannelCode(), null, false);
+        assertEquals("CLAIM", status1.get("action"));
+        assertEquals("公众号", status1.get("source"));
+
+        // 停用渠道应立即失效读缓存
+        flowService.setChannelEnabled(activity.getId(), channel.getId(), false);
+        Map<String, Object> status2 = flowService.visit(activity.getId(), channel.getChannelCode(), null, false);
+        assertEquals("UNAVAILABLE", status2.get("action"));
+
+        // 恢复渠道后暂停活动也应立即失效读缓存
+        flowService.setChannelEnabled(activity.getId(), channel.getId(), true);
+        assertEquals("CLAIM", flowService.visit(activity.getId(), channel.getChannelCode(), null, false).get("action"));
+        campaignService.pause(activity.getId());
+        assertEquals("UNAVAILABLE", flowService.visit(activity.getId(), channel.getChannelCode(), null, false).get("action"));
+    }
+
+    @Test
     void couponTemplateAndActivityPeriodStayConsistent() {
         Shop shop = shop();
         asMerchant(shop);
