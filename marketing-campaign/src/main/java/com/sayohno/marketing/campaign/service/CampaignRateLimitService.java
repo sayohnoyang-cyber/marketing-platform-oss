@@ -97,12 +97,15 @@ public class CampaignRateLimitService {
                 .eq(CampaignOperation::getKind, "LIMIT").eq(CampaignOperation::getStatus, "ACTIVE").orderByDesc(CampaignOperation::getId).last("LIMIT 1"));
     }
 
+    public void admit(long activityId, Long channelId) {
+        admit(activityId, channelId, null);
+    }
+
     /**
      * 领券入口限流，应在任何数据库写入之前调用。
-     * 生效策略和默认保护的判定结果在本机缓存数秒，避免每个请求都查策略、重算配置指纹；
-     * 策略失效（配置变更、部署变更、基线过期）时回落到默认保护额度，而不是拒绝全部领取。
+     * 先检查单用户频控，再原子检查活动总额度与来源额度；策略失效时回落到默认保护额度。
      */
-    public void admit(long activityId, Long channelId) {
+    public void admit(long activityId, Long channelId, Long userId) {
         Decision decision = decision(activityId);
         if (decision.totalQps() <= 0) return;
         var template = redis.getIfAvailable();
@@ -114,10 +117,12 @@ public class CampaignRateLimitService {
         String source = channelId == null ? "direct" : channelId.toString();
         String prefix = "campaign:rate:{" + activityId + "}:" + (decision.fallback() ? "default" : decision.policyId());
         int sourceQps = decision.fallback() ? decision.totalQps() : decision.sources().getOrDefault(source, 1);
+        int perUserQps = userId == null ? 0 : Math.max(0, properties.getCapacity().getPerUserClaimQps());
+        String userKey = "campaign:rate:{" + activityId + "}:user:" + (userId == null ? "anon" : userId);
         Long admitted;
         try {
-            admitted = template.execute(script, List.of(prefix + ":total", prefix + ":" + source),
-                    String.valueOf(decision.totalQps()), String.valueOf(sourceQps));
+            admitted = template.execute(script, List.of(prefix + ":total", prefix + ":" + source, userKey),
+                    String.valueOf(decision.totalQps()), String.valueOf(sourceQps), String.valueOf(perUserQps));
         } catch (RuntimeException exception) { throw new BizException(ErrorCode.CONFLICT, "限流服务暂不可用，请稍后重试"); }
         if (!Long.valueOf(1).equals(admitted)) throw new BizException(ErrorCode.RATE_LIMITED, "当前入口访问较多，请稍后重试");
     }

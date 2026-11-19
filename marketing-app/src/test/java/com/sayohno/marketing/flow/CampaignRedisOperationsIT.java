@@ -75,6 +75,15 @@ class CampaignRedisOperationsIT {
         limits.apply(activity.getId(),new ApplyLimitRequest("apply-again",Long.parseLong(forecast.get("id").toString())));
         flow.setChannelEnabled(activity.getId(), channel.getId(), false);
         limits.admit(activity.getId(),null);
+
+        // 单用户每秒最多 2 次请求，第 3 次被 429 拦截且不阻塞其他用户（P1-4）
+        long spamUser = 70001L + new Random().nextInt(10000);
+        long normalUser = spamUser + 1;
+        limits.admit(activity.getId(), null, spamUser);
+        limits.admit(activity.getId(), null, spamUser);
+        BizException userLimited = assertThrows(BizException.class, () -> limits.admit(activity.getId(), null, spamUser));
+        assertEquals(ErrorCode.RATE_LIMITED, userLimited.getErrorCode());
+        limits.admit(activity.getId(), null, normalUser);
     }
 
     @Test

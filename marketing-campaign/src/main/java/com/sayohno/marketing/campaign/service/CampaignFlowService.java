@@ -642,7 +642,7 @@ public class CampaignFlowService {
     private PreparedClaim prepareClaim(long userId, long activityId, long templateId, String requestId, String credential) {
         CampaignVisit visit = requireVisit(activityId, credential, userId);
         // 限流放在活动、渠道、投放等查询和领取意向写入之前，超额请求不再打到数据库。
-        rateLimits.admit(activityId, visit.getChannelId());
+        rateLimits.admit(activityId, visit.getChannelId(), userId);
         CampaignActivity activity = campaignService.requireReadable(activityId);
         ActivityPhase phase = campaignService.phase(activity);
         if (!phase.claimOpen()) {

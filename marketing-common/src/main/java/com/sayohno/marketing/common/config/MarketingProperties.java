@@ -25,6 +25,8 @@ public class MarketingProperties {
         private String deploymentId = "local-single";
         /** 没有有效限流策略时每场活动领券的默认每秒额度，0 表示不启用默认保护。 */
         private int defaultClaimQps = 200;
+        /** 单用户每秒允许的最大领券请求次数，0 表示关闭单用户频控。 */
+        private int perUserClaimQps = 2;
         /** 限流判定在本机的缓存时长，策略应用或停用时立即失效。 */
         private Duration policyCacheTtl = Duration.ofSeconds(3);
     }
