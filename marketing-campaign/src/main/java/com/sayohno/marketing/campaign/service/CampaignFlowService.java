@@ -562,7 +562,7 @@ public class CampaignFlowService {
     }
 
     public Map<String, Object> personalState(long activityId, long userId) {
-        campaignService.requireReadable(activityId);
+        CampaignActivity activity = campaignService.requireReadable(activityId);
         boolean reserved = reservationMapper.selectCount(Wrappers.<CampaignReservation>lambdaQuery()
                 .eq(CampaignReservation::getActivityId, activityId)
                 .eq(CampaignReservation::getUserId, userId)
@@ -572,7 +572,24 @@ public class CampaignFlowService {
         // 按本场投放统计已发出的券；核销、退款不会恢复领取次数，也不受渠道切换影响。
         long claimed = linked == null || linked.getInventoryId() == null ? 0
                 : claimService.receivedCount(userId, linked.getInventoryId());
-        return Map.of("personalReserved", reserved, "personalClaimed", claimed);
+        String eligibilityReason = eligibilityFailure(activity, userId);
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("personalReserved", reserved);
+        state.put("personalClaimed", claimed);
+        state.put("eligible", eligibilityReason == null);
+        state.put("eligibilityReason", eligibilityReason == null ? "" : eligibilityReason);
+        return state;
+    }
+
+    private String eligibilityFailure(CampaignActivity activity, long userId) {
+        String type = activity.getActivityType();
+        if ("新客领取活动".equals(type) && claimService.hasMerchantVoucher(userId, activity.getMerchantId())) {
+            return "本活动仅限新用户参与";
+        }
+        if ("会员专享活动".equals(type) && !claimService.hasRedeemedMerchantVoucher(userId, activity.getMerchantId())) {
+            return "本活动仅限已有核销记录的会员参与";
+        }
+        return null;
     }
 
     /**
@@ -677,6 +694,10 @@ public class CampaignFlowService {
         }
         if (linked.getInventoryId() == null) {
             throw new BizException(ErrorCode.VALIDATION, "这场活动还没有投放");
+        }
+        String eligibilityReason = eligibilityFailure(activity, userId);
+        if (eligibilityReason != null) {
+            throw new BizException(ErrorCode.VALIDATION, eligibilityReason);
         }
         CampaignClaimIntent intent = rememberIntent(activityId, linked.getInventoryId(), visit, userId, templateId, requestId);
         return new PreparedClaim(visit, linked.getInventoryId(), intent);

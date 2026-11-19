@@ -279,6 +279,14 @@ public class VoucherClaimService {
                 .eq(IssuedVoucher::getInventoryId, inventoryId));
     }
 
+    public boolean hasMerchantVoucher(long userId, long merchantId) {
+        return userMapper.countByUserAndMerchant(userId, merchantId) > 0;
+    }
+
+    public boolean hasRedeemedMerchantVoucher(long userId, long merchantId) {
+        return userMapper.countRedeemedByUserAndMerchant(userId, merchantId) > 0;
+    }
+
     public Page<IssuedVoucher> myCoupons(long userId, long page, long size) {
         long safeSize = Math.min(Math.max(size, 1), 100);
         return userMapper.selectPage(new Page<>(Math.max(page, 1), safeSize),

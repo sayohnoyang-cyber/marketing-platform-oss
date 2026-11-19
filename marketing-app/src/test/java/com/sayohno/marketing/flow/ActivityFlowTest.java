@@ -425,6 +425,39 @@ class ActivityFlowTest {
     }
 
     @Test
+    void activityTypeEnforcesNewUserAndMemberEligibility() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "资格券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 20,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":5}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+
+        // 1. 新客领取活动：新用户可领，已领过券的老用户被拦截
+        var newUserAct = campaignService.create("新客专场", now.minusHours(2), now.minusMinutes(5), now.plusDays(1), "新客领取活动", new BigDecimal("50.00"));
+        campaignService.attachCoupon(newUserAct.getId(), template.getId());
+        flowService.place(newUserAct.getId(), 5, 2, "new-alloc", new BigDecimal("50.00"));
+        flowService.openMain(newUserAct.getId());
+        campaignService.publish(newUserAct.getId());
+        String newCred = (String) flowService.visit(newUserAct.getId(), null, "v-new-1").get("credential");
+        long userId = 6601L;
+        assertEquals(true, flowService.personalState(newUserAct.getId(), userId).get("eligible"));
+        flowService.claim(userId, newUserAct.getId(), template.getId(), "new-r1", newCred);
+        assertEquals(false, flowService.personalState(newUserAct.getId(), userId).get("eligible"));
+        assertThrows(BizException.class, () -> flowService.claim(userId, newUserAct.getId(), template.getId(), "new-r2", newCred));
+
+        // 2. 会员专享活动：未核销用户被拦截
+        var memberAct = campaignService.create("会员专场", now.minusHours(2), now.minusMinutes(5), now.plusDays(1), "会员专享活动", new BigDecimal("50.00"));
+        campaignService.attachCoupon(memberAct.getId(), template.getId());
+        flowService.place(memberAct.getId(), 5, 2, "mem-alloc", new BigDecimal("50.00"));
+        flowService.openMain(memberAct.getId());
+        campaignService.publish(memberAct.getId());
+        String memCred = (String) flowService.visit(memberAct.getId(), null, "v-mem-1").get("credential");
+        assertEquals(false, flowService.personalState(memberAct.getId(), userId).get("eligible"));
+        assertThrows(BizException.class, () -> flowService.claim(userId, memberAct.getId(), template.getId(), "mem-r1", memCred));
+    }
+
+    @Test
     void couponTemplateAndActivityPeriodStayConsistent() {
         Shop shop = shop();
         asMerchant(shop);

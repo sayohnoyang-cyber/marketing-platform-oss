@@ -14,4 +14,18 @@ public interface IssuedVoucherMapper extends BaseMapper<IssuedVoucher> {
             ORDER BY claim_seq DESC LIMIT 1 FOR UPDATE
             """)
     Integer lockLatestClaimSeq(@Param("userId") long userId, @Param("planId") long planId);
+
+    @Select("""
+            SELECT COUNT(*) FROM issued_voucher v
+            JOIN offer_plan p ON p.id = v.plan_id
+            WHERE v.user_id = #{userId} AND p.merchant_id = #{merchantId}
+            """)
+    long countByUserAndMerchant(@Param("userId") long userId, @Param("merchantId") long merchantId);
+
+    @Select("""
+            SELECT COUNT(*) FROM issued_voucher v
+            JOIN offer_plan p ON p.id = v.plan_id
+            WHERE v.user_id = #{userId} AND p.merchant_id = #{merchantId} AND v.status = 'redeemed'
+            """)
+    long countRedeemedByUserAndMerchant(@Param("userId") long userId, @Param("merchantId") long merchantId);
 }
