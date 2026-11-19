@@ -9,6 +9,7 @@ import com.sayohno.marketing.campaign.service.CampaignFlowService;
 import com.sayohno.marketing.campaign.service.CampaignOperationStore;
 import com.sayohno.marketing.campaign.service.CampaignPreparationService;
 import com.sayohno.marketing.campaign.service.CampaignService;
+import com.sayohno.marketing.campaign.service.DataRetentionService;
 import com.sayohno.marketing.common.context.CurrentUser;
 import com.sayohno.marketing.common.context.UserContext;
 import com.sayohno.marketing.common.context.UserRole;
@@ -64,6 +65,8 @@ class ActivityFlowTest {
     private CampaignPreparationService preparationService;
     @Autowired
     private CampaignOperationStore operationStore;
+    @Autowired
+    private DataRetentionService dataRetentionService;
     @Autowired
     private OfferPlanService templateService;
     @Autowired
@@ -493,6 +496,41 @@ class ActivityFlowTest {
         preparationService.autoPrepareUpcoming();
         asMerchant(shop);
         assertEquals(1, operationStore.list(activity.getId(), "PREPARE").size());
+    }
+
+    @Test
+    void recycleDueSkipsAlreadyFrozenActivitiesAndRetentionPurgesExpiredRecords() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "回收与留存券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("到期回收测试", now.minusHours(2), now.minusHours(1), now.plusHours(1));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        flowService.place(activity.getId(), 5, 1, "rec-due-alloc", new BigDecimal("50.00"));
+        flowService.openMain(activity.getId());
+        var published = campaignService.publish(activity.getId());
+
+        // 将结束时间改到过去，首次 recycleDue 应冻结该活动的开放投放，第二次调用应跳过已冻结活动（返回 0）
+        published.setEndTime(now.minusMinutes(1));
+        activityMapper.updateById(published);
+        org.junit.jupiter.api.Assertions.assertTrue(campaignService.recycleDue() >= 1);
+        assertEquals(0, campaignService.recycleDue());
+
+        // 插入一条超过 100 天且未被引用的过期访问记录，验证 purgeExpired 安全清理
+        CampaignVisit expiredVisit = new CampaignVisit();
+        expiredVisit.setVisitTokenHash("expired-token-" + UUID.randomUUID());
+        expiredVisit.setActivityId(activity.getId());
+        expiredVisit.setVisitorId("v-expired");
+        expiredVisit.setVisitedAt(now.minusDays(100));
+        expiredVisit.setExpireAt(now.minusDays(100).plusMinutes(30));
+        expiredVisit.setValidFlag(1);
+        visitMapper.insert(expiredVisit);
+
+        Map<String, Integer> purged = dataRetentionService.purgeExpired(now);
+        org.junit.jupiter.api.Assertions.assertTrue(purged.get("visitsDeleted") >= 1);
+        org.junit.jupiter.api.Assertions.assertNull(visitMapper.selectById(expiredVisit.getId()));
     }
 
     @Test

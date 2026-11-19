@@ -2,10 +2,12 @@ package com.sayohno.marketing.campaign.dao.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.sayohno.marketing.campaign.dao.entity.CampaignVisit;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Mapper
@@ -60,4 +62,12 @@ public interface CampaignVisitMapper extends BaseMapper<CampaignVisit> {
             </script>
             """)
     long unreservedActiveVisitors(@Param("activityId") long activityId, @Param("activeChannelIds") List<Long> activeChannelIds);
+
+    @Delete("""
+            DELETE FROM campaign_visit
+            WHERE visited_at < #{cutoff}
+              AND NOT EXISTS (SELECT 1 FROM campaign_claim_intent i WHERE i.visit_id = campaign_visit.id)
+              AND NOT EXISTS (SELECT 1 FROM campaign_conversion c WHERE c.visit_id = campaign_visit.id)
+            """)
+    int deleteExpiredUnreferenced(@Param("cutoff") LocalDateTime cutoff);
 }

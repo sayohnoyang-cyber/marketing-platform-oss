@@ -83,6 +83,8 @@ public class MarketingProperties {
         private Duration sendingLease = Duration.ofSeconds(30);
         private int batchSize = 200;
         private int maxPerCycle = 2000;
+        private Duration retention = Duration.ofDays(7);
+        private Duration visitRetention = Duration.ofDays(95);
     }
 
     @Data

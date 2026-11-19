@@ -500,15 +500,9 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
 
     public int recycleDue() {
         LocalDateTime now = LocalDateTime.now(clock);
-        List<CampaignActivity> rows = activityMapper.selectList(Wrappers.<CampaignActivity>lambdaQuery()
-                .in(CampaignActivity::getStatus, ActivityStatuses.PUBLISHED, ActivityStatuses.OFFLINE,
-                        ActivityStatuses.PAUSED, ActivityStatuses.CANCELLED));
+        List<CampaignActivity> rows = activityMapper.findDueForRecycle(now);
         int frozen = 0;
         for (CampaignActivity activity : rows) {
-            boolean ended = activity.getStatus() == ActivityStatuses.CANCELLED || !now.isBefore(activity.getEndTime());
-            if (!ended || activity.getStatus() == ActivityStatuses.DRAFT) {
-                continue;
-            }
             freezeCoupons(activity.getId());
             frozen++;
         }

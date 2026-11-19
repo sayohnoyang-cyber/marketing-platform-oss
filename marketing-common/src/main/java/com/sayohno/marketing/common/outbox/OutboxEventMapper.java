@@ -1,6 +1,7 @@
 package com.sayohno.marketing.common.outbox;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -69,4 +70,10 @@ public interface OutboxEventMapper extends BaseMapper<OutboxEvent> {
             WHERE event_id = #{eventId} AND status <> 3
             """)
     int markDead(@Param("eventId") String eventId, @Param("error") String error, @Param("now") LocalDateTime now);
+
+    @Delete("""
+            DELETE FROM infra_outbox_event
+            WHERE status = 2 AND update_time < #{cutoff}
+            """)
+    int deleteExpiredSent(@Param("cutoff") LocalDateTime cutoff);
 }
