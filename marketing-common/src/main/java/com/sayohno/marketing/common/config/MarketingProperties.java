@@ -29,6 +29,8 @@ public class MarketingProperties {
         private int perUserClaimQps = 2;
         /** 限流判定在本机的缓存时长，策略应用或停用时立即失效。 */
         private Duration policyCacheTtl = Duration.ofSeconds(3);
+        /** 预测中未预约有效访客转化为开场 10 秒到场的参考系数。 */
+        private double unreservedArrivalRate = 0.2D;
     }
 
     @Data

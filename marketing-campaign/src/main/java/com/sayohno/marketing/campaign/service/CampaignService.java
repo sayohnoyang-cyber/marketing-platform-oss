@@ -533,13 +533,15 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
 
     @Override
     public void assertDirectClaimAllowed(long templateId) {
+        LocalDateTime now = LocalDateTime.now(clock);
         List<CampaignOffer> links = couponMapper.selectList(Wrappers.<CampaignOffer>lambdaQuery()
                 .eq(CampaignOffer::getPlanId, templateId));
         for (CampaignOffer link : links) {
             CampaignActivity activity = activityMapper.selectById(link.getActivityId());
             if (activity != null && activity.getStatus() != null
                     && activity.getStatus() != ActivityStatuses.DRAFT
-                    && activity.getStatus() != ActivityStatuses.CANCELLED) {
+                    && activity.getStatus() != ActivityStatuses.CANCELLED
+                    && now.isBefore(activity.getEndTime())) {
                 throw new BizException(ErrorCode.CONFLICT, "这张券属于活动，请从活动入口领取");
             }
         }

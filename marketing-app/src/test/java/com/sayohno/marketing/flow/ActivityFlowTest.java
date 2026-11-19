@@ -3,6 +3,7 @@ package com.sayohno.marketing.flow;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.sayohno.marketing.campaign.dao.entity.CampaignChannel;
 import com.sayohno.marketing.campaign.dao.entity.CampaignVisit;
+import com.sayohno.marketing.campaign.dao.mapper.CampaignActivityMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignVisitMapper;
 import com.sayohno.marketing.campaign.service.CampaignFlowService;
 import com.sayohno.marketing.campaign.service.CampaignService;
@@ -66,6 +67,8 @@ class ActivityFlowTest {
     private LinkMapper linkMapper;
     @Autowired
     private CampaignVisitMapper visitMapper;
+    @Autowired
+    private CampaignActivityMapper activityMapper;
     @Autowired
     private VoucherClaimService claimService;
     @Autowired
@@ -354,6 +357,38 @@ class ActivityFlowTest {
         assertEquals("CLAIM", flowService.visit(activity.getId(), channel.getChannelCode(), null, false).get("action"));
         campaignService.pause(activity.getId());
         assertEquals("UNAVAILABLE", flowService.visit(activity.getId(), channel.getChannelCode(), null, false).get("action"));
+    }
+
+    @Test
+    void draftPublicEntryDoesNotLeakCouponDetailsAndEndedActivityAllowsDirectClaim() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "草稿隔离券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(2), now.plusDays(3),
+                "{\"maxClaimsPerUser\":2}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+        var draft = campaignService.create("未发布草稿", now.plusHours(1), now.plusHours(2), now.plusDays(1));
+        campaignService.attachCoupon(draft.getId(), template.getId());
+        flowService.place(draft.getId(), 5, 1, "draft-alloc", new BigDecimal("50.00"));
+        flowService.openMain(draft.getId());
+
+        // P2-5：草稿活动公开访问只返回不可用提示，不暴露券规则与库存
+        Map<String, Object> draftView = flowService.visit(draft.getId(), null, "v-draft", false);
+        assertEquals("UNAVAILABLE", draftView.get("action"));
+        org.junit.jupiter.api.Assertions.assertNull(draftView.get("planId"));
+        org.junit.jupiter.api.Assertions.assertNull(draftView.get("quantity"));
+
+        // P2-6：活动自然结束后不再永久阻止该券的直接领取
+        var ended = campaignService.create("已结束活动", now.minusDays(2), now.minusDays(1), now.plusSeconds(3));
+        campaignService.attachCoupon(ended.getId(), template.getId());
+        flowService.place(ended.getId(), 2, 1, "ended-alloc", new BigDecimal("50.00"));
+        flowService.openMain(ended.getId());
+        campaignService.publish(ended.getId());
+        assertThrows(BizException.class, () -> campaignService.assertDirectClaimAllowed(template.getId()));
+        // 将结束时间改到过去模拟活动自然结束，校验直接领取恢复允许
+        ended.setEndTime(now.minusMinutes(1));
+        activityMapper.updateById(ended);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> campaignService.assertDirectClaimAllowed(template.getId()));
     }
 
     @Test

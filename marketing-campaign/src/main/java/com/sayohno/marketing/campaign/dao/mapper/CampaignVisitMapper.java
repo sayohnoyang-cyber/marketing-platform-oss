@@ -37,4 +37,27 @@ public interface CampaignVisitMapper extends BaseMapper<CampaignVisit> {
             </script>
             """)
     List<ActivityCountRow> uniqueActivityVisitorsBatch(@Param("activityIds") List<Long> activityIds);
+
+    @Select("""
+            <script>
+            SELECT COUNT(DISTINCT v.visitor_id) FROM campaign_visit v
+            WHERE v.activity_id = #{activityId}
+              AND v.valid_flag = 1
+              AND v.visitor_id IS NOT NULL AND v.visitor_id != '' AND v.visitor_id NOT IN ('landing', 'anonymous')
+              AND (
+                v.channel_id IS NULL
+                <if test="activeChannelIds != null and !activeChannelIds.isEmpty()">
+                  OR v.channel_id IN
+                  <foreach item="cid" collection="activeChannelIds" open="(" separator="," close=")">#{cid}</foreach>
+                </if>
+              )
+              AND (
+                v.user_id IS NULL OR NOT EXISTS (
+                  SELECT 1 FROM campaign_reservation r
+                  WHERE r.activity_id = #{activityId} AND r.user_id = v.user_id AND r.status = 1
+                )
+              )
+            </script>
+            """)
+    long unreservedActiveVisitors(@Param("activityId") long activityId, @Param("activeChannelIds") List<Long> activeChannelIds);
 }

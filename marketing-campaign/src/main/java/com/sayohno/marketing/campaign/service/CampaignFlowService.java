@@ -336,14 +336,18 @@ public class CampaignFlowService {
         String actionValue = snapshotAction(phase, blocked, snapshot.inventoryId(), quantity, claimed);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("activityId", snapshot.activityId());
-        body.put("name", snapshot.name());
         body.put("phase", phase.name());
         body.put("serverTime", now.toString());
-        body.put("startTime", snapshot.startTime().toString());
-        body.put("endTime", snapshot.endTime().toString());
         body.put("source", blocked == null ? source : "UNAVAILABLE");
         body.put("action", actionValue);
         body.put("reason", blocked == null ? "" : blocked);
+        // 草稿活动未发布，不通过公开接口暴露名称、券规则与投放库存等内部配置（P2-5）。
+        if (phase == ActivityPhase.DRAFT) {
+            return body;
+        }
+        body.put("name", snapshot.name());
+        body.put("startTime", snapshot.startTime().toString());
+        body.put("endTime", snapshot.endTime().toString());
         if (snapshot.planId() != null) {
             body.put("planId", snapshot.planId());
             if (snapshot.publicOffer() != null) {
@@ -458,16 +462,20 @@ public class CampaignFlowService {
                 source = channel.getName();
             }
         }
+        ActivityPhase phase = campaignService.phase(activity);
         Map<String, Object> body = new LinkedHashMap<>();
-        body.putAll(pageCache.view(activity));
-        body.put("name", activity.getName());
-        body.put("phase", campaignService.phase(activity).name());
+        body.put("activityId", activity.getId());
+        body.put("phase", phase.name());
         body.put("serverTime", LocalDateTime.now(clock).toString());
-        body.put("startTime", activity.getStartTime().toString());
-        body.put("endTime", activity.getEndTime().toString());
         body.put("source", blocked == null ? source : "UNAVAILABLE");
         body.put("action", action(activity, blocked));
         body.put("reason", blocked == null ? "" : blocked);
+        if (phase == ActivityPhase.DRAFT) {
+            return body;
+        }
+        body.put("name", activity.getName());
+        body.put("startTime", activity.getStartTime().toString());
+        body.put("endTime", activity.getEndTime().toString());
         CampaignOffer linked = couponMapper.selectOne(Wrappers.<CampaignOffer>lambdaQuery()
                 .eq(CampaignOffer::getActivityId, activity.getId()));
         if (linked != null) {
@@ -711,6 +719,11 @@ public class CampaignFlowService {
     public long effectiveVisitors(long activityId) {
         campaignService.requireOwned(activityId);
         return visitMapper.uniqueActivityVisitors(activityId);
+    }
+
+    public long unreservedActiveVisitors(long activityId, List<Long> activeChannelIds) {
+        campaignService.requireOwned(activityId);
+        return visitMapper.unreservedActiveVisitors(activityId, activeChannelIds);
     }
 
     @Transactional

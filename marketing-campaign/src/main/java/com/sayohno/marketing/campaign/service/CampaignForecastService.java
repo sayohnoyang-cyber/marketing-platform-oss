@@ -18,10 +18,13 @@ public class CampaignForecastService {
     private final CapacityBaselineService capacity;
     private final Clock clock;
     private final CampaignCalibrationService calibration;
+    private final com.sayohno.marketing.common.config.MarketingProperties properties;
 
     public CampaignForecastService(CampaignService campaigns, CampaignFlowService flow, CampaignConfigurationService configuration,
-            CampaignOperationStore store, CapacityBaselineService capacity, CampaignCalibrationService calibration, Clock clock) {
-        this.campaigns = campaigns; this.flow = flow; this.configuration = configuration; this.store = store; this.capacity = capacity; this.calibration = calibration; this.clock = clock;
+            CampaignOperationStore store, CapacityBaselineService capacity, CampaignCalibrationService calibration,
+            com.sayohno.marketing.common.config.MarketingProperties properties, Clock clock) {
+        this.campaigns = campaigns; this.flow = flow; this.configuration = configuration; this.store = store;
+        this.capacity = capacity; this.calibration = calibration; this.properties = properties; this.clock = clock;
     }
 
     @Transactional
@@ -75,12 +78,13 @@ public class CampaignForecastService {
             row.put("visits", visits);
             row.put("rate", rate); row.put("enabled", active); row.put("expected", expected); rows.add(row);
         }
-        // 全场有效访客按活动维度去重，避免同一访客跨渠道重复累加；用于估算尚未预约的潜在开场流量。
+        // 全场有效访客按活动维度去重；未预约访客直接在同口径下统计启用入口中无有效预约的去重访客，避免跨渠道重复累加相减（P2-4）。
         long totalVisits = Math.max(flow.effectiveVisitors(activityId), channelVisitsSum > 0 ? 1L : 0L);
         long activeVisits = channelVisitsSum;
-        long unreservedVisitors = Math.max(0L, activeVisits - eligibleReservations);
+        double unreservedRate = Math.max(0.0, Math.min(1.0, properties.getCapacity().getUnreservedArrivalRate()));
+        long unreservedVisitors = mainEnabled ? flow.unreservedActiveVisitors(activityId, new ArrayList<>(enabled)) : 0L;
         long visitSuggestedUnreservedQps = unreservedVisitors == 0 ? 0L
-                : Math.max(1L, Math.round(unreservedVisitors * 0.2 * request.attempts() / 10.0));
+                : Math.max(1L, Math.round(unreservedVisitors * unreservedRate * request.attempts() / 10.0));
         Double visitToReservationRate = totalVisits > 0
                 ? Math.round(1000.0 * currentReservations / totalVisits) / 10.0
                 : null;
@@ -95,6 +99,8 @@ public class CampaignForecastService {
         data.put("currentReservations", currentReservations); data.put("eligibleReservations", eligibleReservations);
         data.put("totalVisits", totalVisits);
         data.put("activeVisits", activeVisits);
+        data.put("unreservedVisitors", unreservedVisitors);
+        data.put("unreservedArrivalRate", unreservedRate);
         data.put("visitToReservationRate", visitToReservationRate);
         data.put("visitSuggestedUnreservedQps", visitSuggestedUnreservedQps);
         data.put("rows", rows); data.put("reservations", reservations); data.put("arrivals", arrivals); data.put("average", average);
