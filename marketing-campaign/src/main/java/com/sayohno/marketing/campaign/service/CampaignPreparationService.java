@@ -92,7 +92,7 @@ public class CampaignPreparationService {
             return redirects.warmMapping(links.findOwned(activity.getMainLinkId()));
         });
         task(run, data, tasks, "offer", "优惠券展示规则缓存", () -> coupon == null ? result("FAILED", "尚未选券") : templates.warmOffer(coupon.getPlanId()));
-        task(run, data, tasks, "stock", "库存缓存一致性检查", () -> coupon == null || coupon.getInventoryId() == null ? result("FAILED", "尚未投放") : allocations.inspectStock(coupon.getInventoryId()));
+        task(run, data, tasks, "stock", "库存缓存预热与一致性检查", () -> coupon == null || coupon.getInventoryId() == null ? result("FAILED", "尚未投放") : allocations.warmStock(coupon.getInventoryId()));
         task(run, data, tasks, "page", "活动热点读缓存准备", () -> pages.warm(campaigns.requireOwned(activityId)));
         task(run, data, tasks, "capacity", "开场与消息消费容量校验", () -> capacityCheck(activityId, decision));
         data.put("finishedAt", LocalDateTime.now(clock));

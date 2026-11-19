@@ -134,7 +134,14 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         if (!failed.isEmpty()) {
             throw new BizException(ErrorCode.VALIDATION, "发布检查未通过：" + failed.get(0).get("reason"));
         }
-        return changeStatus(activity, ActivityStatuses.PUBLISHED);
+        CampaignActivity published = changeStatus(activity, ActivityStatuses.PUBLISHED);
+        for (CampaignOffer row : couponMapper.selectList(Wrappers.<CampaignOffer>lambdaQuery()
+                .eq(CampaignOffer::getActivityId, activityId))) {
+            if (row.getInventoryId() != null) {
+                allocationService.warmStockQuietly(row.getInventoryId());
+            }
+        }
+        return published;
     }
 
     @Transactional

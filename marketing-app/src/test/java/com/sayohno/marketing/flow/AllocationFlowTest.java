@@ -185,6 +185,33 @@ class AllocationFlowTest {
         assertThrows(BizException.class, () -> flowService.claim(userId, activity.getId(), template.getId(), "req-d", credential));
     }
 
+    @Test
+    void stockCacheRebuildSubtractsInFlightReservedTickets() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = template(shop, 10, 2);
+        var activity = campaignService.create("在途扣除测试", now.minusHours(2), now.minusMinutes(5), now.plusDays(1));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        var offer = flowService.place(activity.getId(), 2, 1, "if-2", new BigDecimal("100.00"));
+        long inventoryId = offer.getInventoryId();
+        flowService.openMain(activity.getId());
+        campaignService.publish(activity.getId());
+        Link link = linkMapper.selectById(campaignService.requireOwned(activity.getId()).getMainLinkId());
+        String cred1 = (String) flowService.entry(link.getShortUri(), null, "v-if-1").get("credential");
+        String cred2 = (String) flowService.entry(link.getShortUri(), null, "v-if-2").get("credential");
+        String cred3 = (String) flowService.entry(link.getShortUri(), null, "v-if-3").get("credential");
+
+        // 用户 1 预扣 1 张但尚未落库（RESERVED）
+        assertEquals("RESERVED", flowService.claimAsync(9001L, activity.getId(), template.getId(), "if-r1", cred1).get("status"));
+        assertEquals(1, allocationService.availableForCache(allocationService.find(inventoryId)));
+
+        // 模拟 Redis 库存键丢失，重建库存时必须扣除在途的 1 张，只剩 1 张可给用户 2
+        stockGateway.deleteAllocation(inventoryId);
+        assertEquals("RESERVED", flowService.claimAsync(9002L, activity.getId(), template.getId(), "if-r2", cred2).get("status"));
+        assertThrows(BizException.class, () -> flowService.claimAsync(9003L, activity.getId(), template.getId(), "if-r3", cred3));
+    }
+
     private void placeRace(Shop shop, long activityId, String key, CountDownLatch latch, AtomicInteger wins) {
         try {
             latch.await();

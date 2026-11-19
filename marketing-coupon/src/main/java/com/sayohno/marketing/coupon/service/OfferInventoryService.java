@@ -3,20 +3,24 @@ package com.sayohno.marketing.coupon.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.sayohno.marketing.common.exception.BizException;
 import com.sayohno.marketing.common.result.ErrorCode;
+import com.sayohno.marketing.coupon.dao.entity.ClaimTicket;
 import com.sayohno.marketing.coupon.dao.entity.OfferInventory;
 import com.sayohno.marketing.coupon.dao.entity.OfferInventoryCommand;
 import com.sayohno.marketing.coupon.dao.entity.OfferPlan;
+import com.sayohno.marketing.coupon.dao.mapper.ClaimTicketMapper;
 import com.sayohno.marketing.coupon.dao.mapper.OfferInventoryCommandMapper;
 import com.sayohno.marketing.coupon.dao.mapper.OfferInventoryMapper;
 import com.sayohno.marketing.coupon.dao.mapper.OfferPlanMapper;
 import com.sayohno.marketing.coupon.dao.mapper.IssuedVoucherMapper;
 import com.sayohno.marketing.coupon.dao.entity.IssuedVoucher;
+import com.sayohno.marketing.coupon.enums.ClaimTicketStatus;
 import com.sayohno.marketing.coupon.enums.InventoryStatus;
 import com.sayohno.marketing.coupon.stock.OfferStockGateway;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 
 @Service
@@ -25,6 +29,7 @@ public class OfferInventoryService {
     private final OfferInventoryCommandMapper commandMapper;
     private final OfferPlanMapper templateMapper;
     private final IssuedVoucherMapper userMapper;
+    private final ClaimTicketMapper claimTicketMapper;
     private final OfferPlanService templateService;
     private final OfferStockGateway stockGateway;
     private final org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis;
@@ -33,15 +38,79 @@ public class OfferInventoryService {
                                    OfferInventoryCommandMapper commandMapper,
                                    OfferPlanMapper templateMapper,
                                    IssuedVoucherMapper userMapper,
+                                   ClaimTicketMapper claimTicketMapper,
                                    OfferPlanService templateService,
                                    OfferStockGateway stockGateway, org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis) {
         this.allocationMapper = allocationMapper;
         this.commandMapper = commandMapper;
         this.templateMapper = templateMapper;
         this.userMapper = userMapper;
+        this.claimTicketMapper = claimTicketMapper;
         this.templateService = templateService;
         this.stockGateway = stockGateway;
         this.redis = redis;
+    }
+
+    /**
+     * 计算可用于初始化 Redis 库存缓存的真实剩余：数据库剩余减去在途已预扣（RESERVED）票据数，
+     * 防止 Redis 键丢失或预热时把在途未落库的预扣重新放回可用库存。
+     */
+    public int availableForCache(OfferInventory allocation) {
+        int dbRemaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount());
+        Long reserved = claimTicketMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getInventoryId, allocation.getId())
+                .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
+        int inFlight = reserved == null ? 0 : reserved.intValue();
+        return Math.max(0, dbRemaining - inFlight);
+    }
+
+    /**
+     * 预热库存缓存：若键不存在则用 SET NX 写入扣除在途预扣后的可用剩余并读回验证；
+     * 若键已存在则与数据库剩余及在途预扣比对，避免覆盖正在运行中的实时库存。
+     */
+    public java.util.Map<String, Object> warmStock(long inventoryId) {
+        var allocation = requireOwned(inventoryId);
+        var template = templateService.requireOwned(allocation.getPlanId());
+        var cache = redis.getIfAvailable();
+        if (cache == null) return java.util.Map.of("status", "UNVERIFIED", "detail", "Redis未启用，无法预热库存缓存");
+        String key = com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(inventoryId);
+        int dbRemaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount());
+        int available = availableForCache(allocation);
+        long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
+        Boolean initialized = cache.opsForValue().setIfAbsent(key, Integer.toString(available), Duration.ofSeconds(ttl));
+        String raw = cache.opsForValue().get(key);
+        if (raw == null) {
+            return java.util.Map.of("status", "FAILED", "detail", "库存缓存写入后未能读回");
+        }
+        int cached = Integer.parseInt(raw);
+        if (Boolean.TRUE.equals(initialized)) {
+            boolean matched = cached == available;
+            return java.util.Map.of("status", matched ? "SUCCEEDED" : "FAILED",
+                    "detail", matched ? "库存缓存已预热并读回，可用剩余=" + available : "库存缓存初始化后读回不一致");
+        }
+        String status = (cached == available || cached == dbRemaining) ? "SUCCEEDED"
+                : (cached < dbRemaining && cached >= 0) ? "UNVERIFIED" : "FAILED";
+        return java.util.Map.of("status", status,
+                "detail", "数据库剩余=" + dbRemaining + "，扣在途后=" + available + "，缓存剩余=" + cached
+                        + ("UNVERIFIED".equals(status) ? "；可能存在在途预扣，需对账复核" : ""));
+    }
+
+    /** 发布活动时静默预热库存缓存，Redis 未启用或抖动时不阻断发布流程。 */
+    public void warmStockQuietly(long inventoryId) {
+        try {
+            var cache = redis.getIfAvailable();
+            if (cache == null) return;
+            var allocation = allocationMapper.selectById(inventoryId);
+            if (allocation == null || allocation.getStatus() != InventoryStatus.OPEN) return;
+            var template = templateMapper.selectById(allocation.getPlanId());
+            if (template == null || template.getUsableUntil() == null) return;
+            int available = availableForCache(allocation);
+            long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
+            cache.opsForValue().setIfAbsent(
+                    com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(inventoryId),
+                    Integer.toString(available), Duration.ofSeconds(ttl));
+        } catch (RuntimeException ignored) {
+        }
     }
 
     /** Observe only; never initialize or replace the live stock hash. */

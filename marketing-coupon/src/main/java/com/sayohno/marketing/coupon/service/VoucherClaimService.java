@@ -372,7 +372,12 @@ public class VoucherClaimService {
             return new int[]{hold.templateCount(), hold.allocCount()};
         }
         int templateLimit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
-        int remaining = allocation.getQuantity() - allocation.getClaimedCount();
+        // 重建 Redis 库存时扣除数据库里已在途的 RESERVED 票据数，避免因异步落库滞后放大可用库存。
+        Long inFlight = requestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getInventoryId, inventoryId)
+                .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
+        int remaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount()
+                - (inFlight == null ? 0 : inFlight.intValue()));
         long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
         StockDecision decision = stockGateway.tryAcquireAllocation(inventoryId, template.getId(), userId,
                 allocation.getMaxClaimsPerUser(), templateLimit, remaining, ttl, requestRowId);
