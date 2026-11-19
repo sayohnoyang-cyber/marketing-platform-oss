@@ -28,13 +28,11 @@ import com.sayohno.marketing.coupon.enums.IssuerScope;
 import com.sayohno.marketing.coupon.service.OfferInventoryService;
 import com.sayohno.marketing.coupon.service.VoucherClaimService;
 import com.sayohno.marketing.coupon.service.OfferPlanService;
-import com.sayohno.marketing.coupon.stock.StockDecision;
 import com.sayohno.marketing.identity.service.MerchantAccessService;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.dao.entity.LinkGroup;
 import com.sayohno.marketing.shortlink.service.LinkDirectoryService;
 import com.sayohno.marketing.shortlink.service.PublicLinkAddress;
-import jakarta.annotation.PreDestroy;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -49,13 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
 
 @Service
 public class CampaignFlowService {
@@ -79,16 +71,6 @@ public class CampaignFlowService {
     private final CampaignRateLimitService rateLimits;
     private final CampaignPageCache pageCache;
     private final TransactionTemplate transactionTemplate;
-    private final Map<String, CachedVisit> visitCache = new ConcurrentHashMap<>();
-    private final Map<String, CachedAsyncMeta> asyncMetaCache = new ConcurrentHashMap<>();
-    private final Map<String, InFlightClaim> inFlightClaims = new ConcurrentHashMap<>();
-    private final BlockingQueue<AsyncClaimWork> asyncClaimQueue = new LinkedBlockingQueue<>(50_000);
-    private final ExecutorService asyncClaimWorkers = Executors.newFixedThreadPool(8, runnable -> {
-        Thread thread = new Thread(runnable, "async-claim-worker");
-        thread.setDaemon(true);
-        return thread;
-    });
-    private volatile boolean running = true;
 
     public CampaignFlowService(CampaignService campaignService,
                                CampaignChannelMapper channelMapper,
@@ -123,20 +105,6 @@ public class CampaignFlowService {
         this.templateService = templateService;
         this.rateLimits = rateLimits;
         this.pageCache = pageCache;
-        for (int i = 0; i < 8; i++) {
-            asyncClaimWorkers.submit(this::drainAsyncLoop);
-        }
-    }
-
-    @PreDestroy
-    public void shutdownAsyncWorkers() {
-        running = false;
-        asyncClaimWorkers.shutdown();
-        try {
-            asyncClaimWorkers.awaitTermination(15, TimeUnit.SECONDS);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-        }
     }
 
     @Transactional
@@ -201,11 +169,9 @@ public class CampaignFlowService {
             OfferInventory allocation = allocationService.allocate(coupon.getPlanId(), quantity, maxClaimsPerUser, idempotencyKey);
             coupon.setInventoryId(allocation.getId());
             couponMapper.updateById(coupon);
-            asyncMetaCache.clear();
             return coupon;
         }
         allocationService.adjust(coupon.getInventoryId(), quantity, maxClaimsPerUser, idempotencyKey, beforeStart, beforeStart);
-        asyncMetaCache.clear();
         return couponMapper.selectById(coupon.getId());
     }
 
@@ -217,7 +183,6 @@ public class CampaignFlowService {
         }
         channel.setStatus(enabled ? 1 : 0);
         channelMapper.updateById(channel);
-        asyncMetaCache.clear();
         return channel;
     }
 
@@ -467,180 +432,24 @@ public class CampaignFlowService {
     }
 
     /**
-     * 异步秒杀领券：热路径零 MySQL 读写。
-     * 访问凭证、活动/投放元数据走本机短缓存，限流与库存扣减全部在 Redis Lua 原子完成，
-     * 预扣成功后立即入队后台多线程消费落库并返回 RESERVED，落库失败自动回滚 Redis 库存。
+     * 可靠异步领券：先记录归因意向与 claim_ticket，Redis Lua 预扣成功后在同一事务内标记 RESERVED 并写入 Outbox，
+     * 由 Outbox/MQ 消费者幂等落库发券；即使进程崩溃或重启，租约到期后也会由恢复任务兜底完成或补偿。
      */
     public Map<String, Object> claimAsync(long userId, long activityId, long templateId, String requestId, String credential) {
-        if (requestId == null || requestId.isBlank() || requestId.length() > 64) {
-            throw new BizException(ErrorCode.VALIDATION, "requestId 长度必须在 1 到 64 之间");
+        PreparedClaim prepared = prepareClaim(userId, activityId, templateId, requestId, credential);
+        VoucherClaimService.ClaimReceipt receipt = claimService.claimAllocationAsync(
+                userId, templateId, prepared.inventoryId(), IssuerScope.MERCHANT, requestId);
+        if ("SUCCESS".equals(receipt.status()) && receipt.voucherId() != null) {
+            persistClaimAttribution(prepared.intent(), activityId, prepared.visit(), userId, receipt.voucherId());
         }
-        String trimmedRequestId = requestId.trim();
-        CampaignVisit visit = requireVisitFast(activityId, credential, userId);
-        rateLimits.admit(activityId, visit.getChannelId());
-        AsyncClaimMeta meta = loadAsyncMeta(activityId, templateId, visit.getChannelId());
-        String ticketKey = userId + ":" + templateId + ":" + meta.inventoryId() + ":" + trimmedRequestId;
-        InFlightClaim existing = inFlightClaims.get(ticketKey);
-        if (existing != null) {
-            if ("SUCCESS".equals(existing.status()) && existing.voucherId() != null) {
-                return ticketView(new VoucherClaimService.ClaimReceipt(trimmedRequestId, "SUCCESS", existing.voucherId(), null));
-            }
-            if ("RESERVED".equals(existing.status())) {
-                return ticketView(new VoucherClaimService.ClaimReceipt(trimmedRequestId, "RESERVED", null, null));
-            }
-        }
-        String claimKey = RequestHashes.sha256(ticketKey).substring(0, 24);
-        StockDecision decision = claimService.reserveAllocationByKey(
-                userId, templateId, meta.inventoryId(),
-                meta.maxClaimsPerUser(), meta.templateLimit(), meta.remaining(), meta.usableUntil(), claimKey);
-        if (inFlightClaims.size() > 100_000) {
-            evictFinishedInFlightClaims(System.currentTimeMillis());
-        }
-        inFlightClaims.put(ticketKey, new InFlightClaim("RESERVED", null, null, System.currentTimeMillis()));
-        AsyncClaimWork work = new AsyncClaimWork(
-                userId, activityId, templateId, meta.inventoryId(),
-                visit.getChannelId(), visit.getId(), trimmedRequestId, claimKey,
-                decision.claimSeq(), decision.allocCount(), ticketKey);
-        if (!asyncClaimQueue.offer(work)) {
-            inFlightClaims.remove(ticketKey);
-            claimService.compensateAllocationByKey(meta.inventoryId(), templateId, userId,
-                    decision.claimSeq(), decision.allocCount(), claimKey);
-            throw new BizException(ErrorCode.RATE_LIMITED, "当前领券排队较多，请稍后重试");
-        }
-        return ticketView(new VoucherClaimService.ClaimReceipt(trimmedRequestId, "RESERVED", null, null));
+        return ticketView(receipt);
     }
 
     /**
-     * 查询异步领券处理结果，优先读取内存队列状态，落库完成后返回完整券信息。
+     * 查询异步领券处理结果：直接读取数据库 claim_ticket，不依赖进程内状态，且不受活动暂停或结束阶段拦截。
      */
     public Map<String, Object> claimStatus(long userId, long activityId, long templateId, String requestId) {
-        AsyncClaimMeta meta = loadAsyncMeta(activityId, templateId, null);
-        String trimmedRequestId = requestId == null ? "" : requestId.trim();
-        String ticketKey = userId + ":" + templateId + ":" + meta.inventoryId() + ":" + trimmedRequestId;
-        InFlightClaim inFlight = inFlightClaims.get(ticketKey);
-        if (inFlight != null) {
-            if ("RESERVED".equals(inFlight.status())) {
-                return ticketView(new VoucherClaimService.ClaimReceipt(trimmedRequestId, "RESERVED", null, null));
-            }
-            if ("FAILED".equals(inFlight.status())) {
-                return ticketView(new VoucherClaimService.ClaimReceipt(trimmedRequestId, "FAILED", null, null));
-            }
-        }
-        VoucherClaimService.ClaimReceipt ticket = claimService.findClaimTicket(userId, templateId, meta.inventoryId(), trimmedRequestId);
-        if ("SUCCESS".equals(ticket.status()) && ticket.voucherId() != null) {
-            completeClaimAttribution(ticket.voucherId());
-        }
-        return ticketView(ticket);
-    }
-
-    private void drainAsyncLoop() {
-        while (running || !asyncClaimQueue.isEmpty()) {
-            try {
-                AsyncClaimWork work = asyncClaimQueue.poll(200, TimeUnit.MILLISECONDS);
-                if (work == null) {
-                    continue;
-                }
-                processAsyncWork(work);
-            } catch (InterruptedException exception) {
-                if (!running) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            } catch (RuntimeException ignored) {
-            }
-        }
-    }
-
-    private void processAsyncWork(AsyncClaimWork work) {
-        try {
-            IssuedVoucher coupon = claimService.persistAsyncClaim(
-                    work.userId(), work.templateId(), work.inventoryId(), IssuerScope.MERCHANT,
-                    work.requestId(), work.claimKey(), work.templateCount(), work.allocCount());
-            transactionTemplate.executeWithoutResult(status -> {
-                CampaignClaimIntent intent = intentMapper.selectOne(Wrappers.<CampaignClaimIntent>lambdaQuery()
-                        .eq(CampaignClaimIntent::getUserId, work.userId())
-                        .eq(CampaignClaimIntent::getPlanId, work.templateId())
-                        .eq(CampaignClaimIntent::getInventoryId, work.inventoryId())
-                        .eq(CampaignClaimIntent::getRequestId, work.requestId()));
-                if (intent == null) {
-                    intent = new CampaignClaimIntent();
-                    intent.setActivityId(work.activityId());
-                    intent.setInventoryId(work.inventoryId());
-                    intent.setChannelId(work.channelId());
-                    intent.setVisitId(work.visitId());
-                    intent.setUserId(work.userId());
-                    intent.setPlanId(work.templateId());
-                    intent.setRequestId(work.requestId());
-                    intent.setVoucherId(coupon.getId());
-                    try {
-                        intentMapper.insert(intent);
-                    } catch (DataIntegrityViolationException ignored) {
-                    }
-                } else if (intent.getVoucherId() == null) {
-                    intent.setVoucherId(coupon.getId());
-                    intentMapper.updateById(intent);
-                }
-                recordConversion("claim:" + coupon.getId(), "CLAIM", work.activityId(),
-                        work.channelId(), work.visitId(), work.userId(), coupon.getId(), null, LocalDateTime.now(clock));
-            });
-            inFlightClaims.put(work.ticketKey(), new InFlightClaim("SUCCESS", coupon.getId(), null, System.currentTimeMillis()));
-        } catch (RuntimeException exception) {
-            inFlightClaims.put(work.ticketKey(), new InFlightClaim("FAILED", null, exception.getMessage(), System.currentTimeMillis()));
-        }
-    }
-
-    private CampaignVisit requireVisitFast(long activityId, String credential, long userId) {
-        if (credential == null || credential.isBlank()) {
-            throw new BizException(ErrorCode.VALIDATION, "缺少访问凭证");
-        }
-        String hash = RequestHashes.sha256(credential);
-        long nowMs = System.currentTimeMillis();
-        CachedVisit cached = visitCache.get(hash);
-        if (cached != null && cached.loadedAt() + 5_000L > nowMs) {
-            CampaignVisit visit = cached.visit();
-            if (!visit.getActivityId().equals(activityId)) {
-                throw new BizException(ErrorCode.CONFLICT, "访问凭证不属于这场活动");
-            }
-            if (!LocalDateTime.now(clock).isBefore(visit.getExpireAt())) {
-                visitCache.remove(hash);
-                throw new BizException(ErrorCode.CONFLICT, "访问凭证已过期");
-            }
-            if (visit.getUserId() != null && !visit.getUserId().equals(userId)) {
-                throw new BizException(ErrorCode.CONFLICT, "访问凭证已绑定其他用户");
-            }
-            if (visit.getUserId() != null) {
-                return visit;
-            }
-        }
-        CampaignVisit visit = requireVisit(activityId, credential, userId);
-        if (visitCache.size() > 100_000) {
-            visitCache.clear();
-        }
-        visitCache.put(hash, new CachedVisit(nowMs, visit));
-        return visit;
-    }
-
-    private AsyncClaimMeta loadAsyncMeta(long activityId, long templateId, Long channelId) {
-        String key = activityId + ":" + templateId + ":" + (channelId == null ? "direct" : channelId);
-        long nowMs = System.currentTimeMillis();
-        CachedAsyncMeta cached = asyncMetaCache.get(key);
-        if (cached != null && cached.loadedAt() + 2_000L > nowMs) {
-            return cached.meta();
-        }
-        CampaignActivity activity = campaignService.requireReadable(activityId);
-        ActivityPhase phase = campaignService.phase(activity);
-        if (!phase.claimOpen()) {
-            throw new BizException(ErrorCode.CONFLICT, "活动未开场、已下线、已结束或已暂停，不能领取");
-        }
-        if (activity.getMainLinkId() != null && (activity.getMainEnabled() == null || activity.getMainEnabled() != 1)) {
-            throw new BizException(ErrorCode.CONFLICT, "主链已停用");
-        }
-        if (channelId != null) {
-            CampaignChannel channel = channelMapper.selectById(channelId);
-            if (channel == null || channel.getStatus() == null || channel.getStatus() != 1) {
-                throw new BizException(ErrorCode.CONFLICT, "渠道已停用");
-            }
-        }
+        campaignService.requireReadable(activityId);
         CampaignOffer linked = couponMapper.selectOne(Wrappers.<CampaignOffer>lambdaQuery()
                 .eq(CampaignOffer::getActivityId, activityId)
                 .eq(CampaignOffer::getPlanId, templateId));
@@ -650,49 +459,11 @@ public class CampaignFlowService {
         if (linked.getInventoryId() == null) {
             throw new BizException(ErrorCode.VALIDATION, "这场活动还没有投放");
         }
-        OfferInventory allocation = allocationService.find(linked.getInventoryId());
-        if (allocation == null || allocation.getStatus() != InventoryStatus.OPEN) {
-            throw new BizException(ErrorCode.VALIDATION, "投放不可用");
+        VoucherClaimService.ClaimReceipt ticket = claimService.findClaimTicket(userId, templateId, linked.getInventoryId(), requestId);
+        if ("SUCCESS".equals(ticket.status()) && ticket.voucherId() != null) {
+            completeClaimAttribution(ticket.voucherId());
         }
-        VoucherClaimService.AsyncTemplateMeta tplMeta = claimService.findOpenTemplateMeta(templateId);
-        int remaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount());
-        AsyncClaimMeta meta = new AsyncClaimMeta(
-                linked.getInventoryId(), allocation.getMaxClaimsPerUser(),
-                tplMeta.templateLimit(), remaining, tplMeta.usableUntil());
-        if (asyncMetaCache.size() > 10_000) {
-            asyncMetaCache.clear();
-        }
-        asyncMetaCache.put(key, new CachedAsyncMeta(nowMs, meta));
-        return meta;
-    }
-
-    private record CachedVisit(long loadedAt, CampaignVisit visit) {
-    }
-
-    private record AsyncClaimMeta(long inventoryId, int maxClaimsPerUser, int templateLimit, int remaining, LocalDateTime usableUntil) {
-    }
-
-    private record CachedAsyncMeta(long loadedAt, AsyncClaimMeta meta) {
-    }
-
-    private record InFlightClaim(String status, Long voucherId, String error, long updatedAtMs) {
-    }
-
-    /**
-     * 仅清理已完成且超过保留期的异步领券内存状态，避免在途 RESERVED 记录被误清空导致前端查单 404。
-     */
-    private void evictFinishedInFlightClaims(long nowMs) {
-        long expireBefore = nowMs - 60_000L;
-        inFlightClaims.entrySet().removeIf(entry ->
-                !"RESERVED".equals(entry.getValue().status()) && entry.getValue().updatedAtMs() < expireBefore);
-        if (inFlightClaims.size() > 100_000) {
-            inFlightClaims.entrySet().removeIf(entry -> !"RESERVED".equals(entry.getValue().status()));
-        }
-    }
-
-    private record AsyncClaimWork(long userId, long activityId, long templateId, long inventoryId,
-                                  Long channelId, Long visitId, String requestId, String claimKey,
-                                  int templateCount, int allocCount, String ticketKey) {
+        return ticketView(ticket);
     }
 
     /**

@@ -31,9 +31,14 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.sayohno.marketing.common.outbox.OutboxPublisher;
+import com.sayohno.marketing.coupon.dao.entity.ClaimTicket;
+import com.sayohno.marketing.coupon.dao.mapper.ClaimTicketMapper;
+import com.sayohno.marketing.coupon.dao.mapper.OfferPlanMapper;
 import com.sayohno.marketing.coupon.service.VoucherClaimService;
+import com.sayohno.marketing.coupon.stock.OfferStockGateway;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.Set;
@@ -66,6 +71,12 @@ class ActivityFlowTest {
     private PlatformTransactionManager transactionManager;
     @Autowired
     private OutboxPublisher outboxPublisher;
+    @Autowired
+    private ClaimTicketMapper claimTicketMapper;
+    @Autowired
+    private OfferPlanMapper offerPlanMapper;
+    @Autowired
+    private OfferStockGateway stockGateway;
 
     @AfterEach
     void clear() {
@@ -208,30 +219,95 @@ class ActivityFlowTest {
         Map<String, Object> entry = flowService.entry(link.getShortUri(), channel.getChannelCode(), "visitor-async");
         String credential = (String) entry.get("credential");
 
-        // 第一步：异步接口只做预扣与入队，立即返回 RESERVED
+        // 第一步：异步接口落库 claim_ticket 与 Outbox 事件，立即返回 RESERVED
         Map<String, Object> accepted = flowService.claimAsync(77L, activity.getId(), template.getId(), "async-req-1", credential);
         assertEquals("RESERVED", accepted.get("status"));
+        assertEquals("RESERVED", flowService.claimStatus(77L, activity.getId(), template.getId(), "async-req-1").get("status"));
 
-        // 第二步：等待后台工作线程完成单事务落库与归因回填
-        Map<String, Object> done = accepted;
-        for (int i = 0; i < 60; i++) {
-            done = flowService.claimStatus(77L, activity.getId(), template.getId(), "async-req-1");
-            if ("SUCCESS".equals(done.get("status"))) {
-                break;
-            }
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
+        // 第二步：由 Outbox 消费完成落库与归因回填（不依赖进程内队列）
+        outboxPublisher.publishDue(20);
+        outboxPublisher.publishDue(20);
+        Map<String, Object> done = flowService.claimStatus(77L, activity.getId(), template.getId(), "async-req-1");
         assertEquals("SUCCESS", done.get("status"));
         org.junit.jupiter.api.Assertions.assertNotNull(done.get("voucherId"));
         assertEquals(1L, flowService.personalState(activity.getId(), 77L).get("personalClaimed"));
         asMerchant(shop);
         assertEquals(1L, flowService.report(activity.getId()).stream()
                 .filter(row -> channel.getId().equals(row.get("channelId"))).findFirst().orElseThrow().get("claims"));
+
+        // 活动暂停后，用户仍可正常查询已提交的异步领券结果（P0-4）
+        campaignService.pause(activity.getId());
+        Map<String, Object> afterPause = flowService.claimStatus(77L, activity.getId(), template.getId(), "async-req-1");
+        assertEquals("SUCCESS", afterPause.get("status"));
+        assertEquals(done.get("voucherId"), afterPause.get("voucherId"));
+    }
+
+    @Test
+    void asyncClaimRecoversAfterOutboxMissedAndLeaseExpired() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "恢复券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("宕机恢复活动", now.minusHours(2), now.minusMinutes(5), now.plusDays(1));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        var offer = flowService.place(activity.getId(), 5, 1, "rec-alloc", new BigDecimal("50.00"));
+        flowService.openMain(activity.getId());
+        campaignService.publish(activity.getId());
+        Link link = linkMapper.selectById(campaignService.requireOwned(activity.getId()).getMainLinkId());
+        String credential = (String) flowService.entry(link.getShortUri(), null, "visitor-rec").get("credential");
+
+        Map<String, Object> accepted = flowService.claimAsync(88L, activity.getId(), template.getId(), "rec-req-1", credential);
+        assertEquals("RESERVED", accepted.get("status"));
+
+        // 模拟进程重启/Outbox 尚未消费且租约过期
+        ClaimTicket ticket = claimTicketMapper.selectOne(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getUserId, 88L)
+                .eq(ClaimTicket::getInventoryId, offer.getInventoryId())
+                .eq(ClaimTicket::getRequestId, "rec-req-1"));
+        ticket.setLeaseUntil(now.minusMinutes(5));
+        claimTicketMapper.updateById(ticket);
+
+        int recovered = claimService.recoverStuck(Duration.ZERO);
+        org.junit.jupiter.api.Assertions.assertTrue(recovered >= 1);
+        Map<String, Object> status = flowService.claimStatus(88L, activity.getId(), template.getId(), "rec-req-1");
+        assertEquals("SUCCESS", status.get("status"));
+        org.junit.jupiter.api.Assertions.assertNotNull(status.get("voucherId"));
+    }
+
+    @Test
+    void asyncClaimCompensatesWhenTemplateClosedBeforeCommit() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "关闭补偿券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("补偿测试", now.minusHours(2), now.minusMinutes(5), now.plusDays(1));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        var offer = flowService.place(activity.getId(), 5, 1, "comp-alloc", new BigDecimal("50.00"));
+        flowService.openMain(activity.getId());
+        campaignService.publish(activity.getId());
+        Link link = linkMapper.selectById(campaignService.requireOwned(activity.getId()).getMainLinkId());
+        String credential = (String) flowService.entry(link.getShortUri(), null, "visitor-comp").get("credential");
+
+        Map<String, Object> accepted = flowService.claimAsync(99L, activity.getId(), template.getId(), "comp-req-1", credential);
+        assertEquals("RESERVED", accepted.get("status"));
+        ClaimTicket ticket = claimTicketMapper.selectOne(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getUserId, 99L)
+                .eq(ClaimTicket::getInventoryId, offer.getInventoryId())
+                .eq(ClaimTicket::getRequestId, "comp-req-1"));
+        org.junit.jupiter.api.Assertions.assertNotNull(stockGateway.readAllocationHold(offer.getInventoryId(), ticket.getId()));
+
+        // 消费前将券模板置为非 OPEN，异步落库应标记 FAILED 并回补 Redis hold
+        template.setStatus(OfferPlanStatus.CLOSED);
+        offerPlanMapper.updateById(template);
+        outboxPublisher.publishDue(20);
+
+        Map<String, Object> failed = flowService.claimStatus(99L, activity.getId(), template.getId(), "comp-req-1");
+        assertEquals("FAILED", failed.get("status"));
+        org.junit.jupiter.api.Assertions.assertNull(stockGateway.readAllocationHold(offer.getInventoryId(), ticket.getId()));
     }
 
     @Test
