@@ -44,12 +44,15 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
         if (held == null || held != claimSeq) {
             return 0;
         }
+        Map<Long, Integer> counts = templateUsers.get(templateId);
+        if (counts != null) {
+            int current = counts.getOrDefault(userId, 0);
+            if (current > 0) {
+                counts.put(userId, current - 1);
+            }
+        }
         State state = states.get(templateId);
         if (state != null) {
-            Map<Long, Integer> counts = templateUsers.get(templateId);
-            if (counts != null && counts.getOrDefault(userId, 0) == claimSeq) {
-                counts.put(userId, claimSeq - 1);
-            }
             state.stock++;
         }
         holds.remove(claimRequestId);
@@ -120,13 +123,17 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
             return 0;
         }
         Map<Long, Integer> template = templateUsers.get(templateId);
-        if (template != null && template.getOrDefault(userId, 0) == templateCount) {
-            template.put(userId, templateCount - 1);
+        if (template != null) {
+            int current = template.getOrDefault(userId, 0);
+            if (current > 0) {
+                template.put(userId, current - 1);
+            }
         }
         State state = allocations.get(inventoryId);
         if (state != null) {
-            if (state.counts.getOrDefault(userId, 0) == allocCount) {
-                state.counts.put(userId, allocCount - 1);
+            int current = state.counts.getOrDefault(userId, 0);
+            if (current > 0) {
+                state.counts.put(userId, current - 1);
             }
             state.stock++;
         }

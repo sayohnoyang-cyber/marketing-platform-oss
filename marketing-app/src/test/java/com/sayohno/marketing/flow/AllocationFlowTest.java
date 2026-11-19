@@ -153,6 +153,38 @@ class AllocationFlowTest {
         assertThrows(BizException.class, () -> allocationService.requireOwned(inventoryId));
     }
 
+    @Test
+    void outOfOrderCompensationRestoresQuotaAndAvoidsClaimSeqConflict() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = template(shop, 10, 2);
+        var activity = campaignService.create("乱序回补测试", now.plusHours(1), now.plusHours(2), now.plusDays(2));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        var offer = flowService.place(activity.getId(), 5, 2, "oo-5", new BigDecimal("100.00"));
+        long inventoryId = offer.getInventoryId();
+        flowService.openMain(activity.getId());
+        campaignService.publish(activity.getId());
+        campaignService.postpone(activity.getId(), now.minusHours(2), now.minusMinutes(1), now.plusDays(1));
+        Link link = linkMapper.selectById(campaignService.requireOwned(activity.getId()).getMainLinkId());
+        Map<String, Object> entry = flowService.entry(link.getShortUri(), null, "v-oo");
+        String credential = (String) entry.get("credential");
+
+        long userId = 8801L;
+        // 模拟 A(seq=1) 与 B(seq=2) 并发预扣，B 先落库、A 乱序回补
+        StockDecision a = stockGateway.tryAcquireAllocation(inventoryId, template.getId(), userId, 2, 2, 5, 3600, 91001L);
+        assertTrue(a.ok());
+        assertEquals(1, a.claimSeq());
+        var bVoucher = flowService.claim(userId, activity.getId(), template.getId(), "req-b", credential);
+        assertEquals(1, bVoucher.getClaimSeq());
+        // 此时 Redis 计数为 2，A 的序号为 1，乱序回补仍应将限领计数减回 1
+        assertEquals(1, stockGateway.compensateAllocation(inventoryId, template.getId(), userId, a.claimSeq(), a.allocCount(), 91001L));
+        // 随后用户再次领券 C，不应被误判超限，也不应触发 claim_seq 唯一键冲突
+        var cVoucher = flowService.claim(userId, activity.getId(), template.getId(), "req-c", credential);
+        assertEquals(2, cVoucher.getClaimSeq());
+        assertThrows(BizException.class, () -> flowService.claim(userId, activity.getId(), template.getId(), "req-d", credential));
+    }
+
     private void placeRace(Shop shop, long activityId, String key, CountDownLatch latch, AtomicInteger wins) {
         try {
             latch.await();

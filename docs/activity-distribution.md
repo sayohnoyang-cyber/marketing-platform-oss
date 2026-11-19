@@ -30,7 +30,7 @@
 
 ## 限领
 
-本场限领只统计该 `allocation_id`。模板 `maxClaimsPerUser` 统计该模板下直接领取和所有投放。领取必须同时满足两个上限。本场限领不能高于模板总限领。用户券的 `claim_seq` 仍是模板维度的序号，避免两场投放撞上原来的唯一键 `(user_id, offer_plan_id, claim_seq)`。
+本场限领只统计该 `allocation_id`。模板 `maxClaimsPerUser` 统计该模板下直接领取和所有投放。领取必须同时满足两个上限。本场限领不能高于模板总限领。用户券的 `claim_seq` 仍在模板维度递增，并在落库事务内通过 `FOR UPDATE` 取当前最大序号加一分配，避免 Redis 并发乱序回补限领计数后触发 `(user_id, plan_id, claim_seq)` 唯一键冲突。
 
 ## 开场前后
 

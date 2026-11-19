@@ -8,9 +8,11 @@ if not ticket or tostring(ticket) ~= tostring(expected) then
     return 0
 end
 local claimed = tonumber(redis.call('GET', KEYS[2]) or '0')
-if claimed == tonumber(expected) then
+if claimed > 0 then
     redis.call('DECR', KEYS[2])
 end
-redis.call('INCR', KEYS[1])
+if redis.call('EXISTS', KEYS[1]) == 1 then
+    redis.call('INCR', KEYS[1])
+end
 redis.call('DEL', KEYS[3])
 return 1

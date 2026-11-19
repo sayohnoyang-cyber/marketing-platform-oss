@@ -524,11 +524,14 @@ public class VoucherClaimService {
                 }
             }
             LocalDateTime now = LocalDateTime.now();
+            // 在数据库事务内基于已有最大序号递增分配 claim_seq，避免 Redis 乱序回补限领计数后触发唯一键冲突。
+            Integer latestSeq = userMapper.lockLatestClaimSeq(userId, template.getId());
+            int dbClaimSeq = (latestSeq == null ? 0 : latestSeq) + 1;
             IssuedVoucher coupon = new IssuedVoucher();
             coupon.setUserId(userId);
             coupon.setPlanId(template.getId());
             coupon.setInventoryId(inventoryId);
-            coupon.setClaimSeq(claimSeq);
+            coupon.setClaimSeq(dbClaimSeq);
             coupon.setIssuerScope(source);
             coupon.setGrantedAt(now);
             coupon.setUsableFrom(now);
@@ -541,7 +544,7 @@ public class VoucherClaimService {
             }
             current.setStatus(ClaimTicketStatus.SUCCEEDED);
             current.setVoucherId(coupon.getId());
-            current.setClaimSeq(claimSeq);
+            current.setClaimSeq(dbClaimSeq);
             current.setRedisApplied(1);
             current.setReservationToken(null);
             current.setLeaseUntil(null);
