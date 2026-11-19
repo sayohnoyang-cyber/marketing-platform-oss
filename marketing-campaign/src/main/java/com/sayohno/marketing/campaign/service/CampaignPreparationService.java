@@ -1,11 +1,17 @@
 package com.sayohno.marketing.campaign.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.sayohno.marketing.campaign.ActivityStatuses;
+import com.sayohno.marketing.campaign.dao.entity.CampaignActivity;
 import com.sayohno.marketing.campaign.dao.entity.CampaignOffer;
+import com.sayohno.marketing.campaign.dao.mapper.CampaignActivityMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignOfferMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignOperationMapper;
 import com.sayohno.marketing.campaign.dao.entity.CampaignOperation;
 import com.sayohno.marketing.common.config.MarketingProperties;
+import com.sayohno.marketing.common.context.CurrentUser;
+import com.sayohno.marketing.common.context.UserContext;
+import com.sayohno.marketing.common.context.UserRole;
 import com.sayohno.marketing.common.exception.BizException;
 import com.sayohno.marketing.common.result.ErrorCode;
 import com.sayohno.marketing.coupon.service.OfferInventoryService;
@@ -21,6 +27,7 @@ import java.util.function.Supplier;
 @Service
 public class CampaignPreparationService {
     private final CampaignService campaigns;
+    private final CampaignActivityMapper activityMapper;
     private final CampaignOperationStore store;
     private final CampaignOperationMapper operations;
     private final CampaignConfigurationService configuration;
@@ -38,15 +45,66 @@ public class CampaignPreparationService {
     private final CampaignRateLimitService rateLimits;
     private final CampaignFlowService flow;
 
-    public CampaignPreparationService(CampaignService campaigns, CampaignOperationStore store, CampaignOperationMapper operations,
+    public CampaignPreparationService(CampaignService campaigns, CampaignActivityMapper activityMapper,
+            CampaignOperationStore store, CampaignOperationMapper operations,
             CampaignConfigurationService configuration, CampaignOfferMapper coupons, OfferPlanService templates,
             OfferInventoryService allocations, LinkDirectoryService links, RedirectService redirects, CampaignPageCache pages,
             CapacityBaselineService capacity, MarketingProperties properties, CampaignMessageService messages,
             CampaignForecastService forecasts, CampaignRateLimitService rateLimits, CampaignFlowService flow, Clock clock) {
-        this.campaigns = campaigns; this.store = store; this.operations = operations; this.configuration = configuration;
-        this.coupons = coupons; this.templates = templates; this.allocations = allocations; this.links = links;
-        this.redirects = redirects; this.pages = pages; this.capacity = capacity; this.properties = properties;
+        this.campaigns = campaigns; this.activityMapper = activityMapper; this.store = store; this.operations = operations;
+        this.configuration = configuration; this.coupons = coupons; this.templates = templates; this.allocations = allocations;
+        this.links = links; this.redirects = redirects; this.pages = pages; this.capacity = capacity; this.properties = properties;
         this.messages = messages; this.forecasts = forecasts; this.rateLimits = rateLimits; this.flow = flow; this.clock = clock;
+    }
+
+    /**
+     * 扫描即将开场（5 分钟内）且尚未完成当前配置预热的已发布活动，自动执行一次预热兜底（P2-7）。
+     */
+    public int autoPrepareUpcoming() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime windowEnd = now.plusMinutes(5);
+        List<CampaignActivity> upcoming = activityMapper.selectList(Wrappers.<CampaignActivity>lambdaQuery()
+                .eq(CampaignActivity::getStatus, ActivityStatuses.PUBLISHED)
+                .gt(CampaignActivity::getStartTime, now)
+                .le(CampaignActivity::getStartTime, windowEnd));
+        int prepared = 0;
+        for (CampaignActivity activity : upcoming) {
+            try {
+                Map<String, Object> outcome = runInternal(activity, "auto:" + activity.getId() + ":" + activity.getVersion());
+                if (outcome != null) {
+                    prepared++;
+                }
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return prepared;
+    }
+
+    /**
+     * 供后台调度器在无 HTTP 会话时按活动所属工作空间执行预热，执行完毕后严格恢复原上下文。
+     */
+    public Map<String, Object> runInternal(CampaignActivity activity, String requestKey) {
+        CurrentUser previous = UserContext.get();
+        try {
+            UserContext.set(CurrentUser.builder()
+                    .userId(activity.getMerchantId())
+                    .username("system-auto-prepare")
+                    .merchantId(activity.getMerchantId())
+                    .roles(Set.of(UserRole.OWNER, UserRole.USER))
+                    .build());
+            var existingRuns = store.list(activity.getId(), "PREPARE");
+            if (!existingRuns.isEmpty() && !Boolean.TRUE.equals(existingRuns.get(0).get("stale"))
+                    && Set.of("SUCCEEDED", "PARTIAL").contains(String.valueOf(existingRuns.get(0).get("status")))) {
+                return existingRuns.get(0);
+            }
+            return run(activity.getId(), requestKey);
+        } finally {
+            if (previous == null) {
+                UserContext.clear();
+            } else {
+                UserContext.set(previous);
+            }
+        }
     }
 
     /** Synchronous bounded application checks. Each task result is persisted independently. */

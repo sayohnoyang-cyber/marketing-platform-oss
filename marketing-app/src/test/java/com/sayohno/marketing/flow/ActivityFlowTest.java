@@ -6,6 +6,8 @@ import com.sayohno.marketing.campaign.dao.entity.CampaignVisit;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignActivityMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignVisitMapper;
 import com.sayohno.marketing.campaign.service.CampaignFlowService;
+import com.sayohno.marketing.campaign.service.CampaignOperationStore;
+import com.sayohno.marketing.campaign.service.CampaignPreparationService;
 import com.sayohno.marketing.campaign.service.CampaignService;
 import com.sayohno.marketing.common.context.CurrentUser;
 import com.sayohno.marketing.common.context.UserContext;
@@ -58,6 +60,10 @@ class ActivityFlowTest {
     private CampaignService campaignService;
     @Autowired
     private CampaignFlowService flowService;
+    @Autowired
+    private CampaignPreparationService preparationService;
+    @Autowired
+    private CampaignOperationStore operationStore;
     @Autowired
     private OfferPlanService templateService;
     @Autowired
@@ -455,6 +461,38 @@ class ActivityFlowTest {
         String memCred = (String) flowService.visit(memberAct.getId(), null, "v-mem-1").get("credential");
         assertEquals(false, flowService.personalState(memberAct.getId(), userId).get("eligible"));
         assertThrows(BizException.class, () -> flowService.claim(userId, memberAct.getId(), template.getId(), "mem-r1", memCred));
+    }
+
+    @Test
+    void autoPrepareUpcomingPreparesActivityWithoutUserSession() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "自动预热券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("3分钟后开场", now.minusMinutes(10), now.plusMinutes(3), now.plusDays(1), "优惠券推广活动", new BigDecimal("50.00"));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        flowService.place(activity.getId(), 5, 1, "auto-prep-alloc", new BigDecimal("50.00"));
+        flowService.openMain(activity.getId());
+        campaignService.publish(activity.getId());
+
+        // 清空用户会话，模拟后台定时任务无会话触发自动预热（P2-7）
+        UserContext.clear();
+        int count = preparationService.autoPrepareUpcoming();
+        org.junit.jupiter.api.Assertions.assertTrue(count >= 1);
+        org.junit.jupiter.api.Assertions.assertNull(UserContext.get());
+
+        asMerchant(shop);
+        var runs = operationStore.list(activity.getId(), "PREPARE");
+        assertEquals(1, runs.size());
+        assertEquals(false, runs.get(0).get("stale"));
+
+        // 重复调度不会重复创建新预热记录
+        UserContext.clear();
+        preparationService.autoPrepareUpcoming();
+        asMerchant(shop);
+        assertEquals(1, operationStore.list(activity.getId(), "PREPARE").size());
     }
 
     @Test

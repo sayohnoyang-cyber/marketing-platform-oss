@@ -63,6 +63,8 @@ marketing:
     max-retries: ${OUTBOX_MAX_RETRIES:8}
     batch-size: ${OUTBOX_BATCH_SIZE:200}
     max-per-cycle: ${OUTBOX_MAX_PER_CYCLE:2000}
+  capacity:
+    auto-prepare-enabled: ${AUTO_PREPARE_ENABLED:true}
   offer:
     grant-batch-scan-enabled: ${OFFER_GRANT_BATCH_SCAN_ENABLED:true}
     grant-batch-lease: ${OFFER_GRANT_BATCH_LEASE:2m}

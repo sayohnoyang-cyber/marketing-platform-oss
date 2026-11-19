@@ -31,6 +31,8 @@ public class MarketingProperties {
         private Duration policyCacheTtl = Duration.ofSeconds(3);
         /** 预测中未预约有效访客转化为开场 10 秒到场的参考系数。 */
         private double unreservedArrivalRate = 0.2D;
+        /** 是否开启开场前 5 分钟自动预热调度兜底。 */
+        private boolean autoPrepareEnabled = false;
     }
 
     @Data

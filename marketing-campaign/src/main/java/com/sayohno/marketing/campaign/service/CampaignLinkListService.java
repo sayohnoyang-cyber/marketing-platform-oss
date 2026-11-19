@@ -60,7 +60,7 @@ public class CampaignLinkListService {
                 row.setPage(!Boolean.TRUE.equals(row.getOnFlag()) ? "已停用"
                         : row.getValidDate() != null && !now.isBefore(row.getValidDate()) ? "已过期" : "已启用");
             } else {
-                var phase = ActivityPhase.of(row.getActivityStatus(), row.getStartTime(), row.getStartTime(), row.getEndTime(), now);
+                var phase = ActivityPhase.of(row.getActivityStatus(), row.getStartTime(), row.getEndTime(), now);
                 row.setPhase(phase.name());
                 row.setPage(!Boolean.TRUE.equals(row.getOnFlag()) ? "已停用" : !Boolean.TRUE.equals(row.getMainReady()) ? "主链不可用" : phaseLabel(phase));
             }
@@ -92,7 +92,7 @@ public class CampaignLinkListService {
     public ActivitySpotlight spotlight() {
         var now = LocalDateTime.now(clock);
         var row = lists.spotlight(access.requireMerchant().getMerchantId(), now);
-        if (row != null) row.setPhase(ActivityPhase.of(row.getStatus(), row.getStartTime(), row.getStartTime(), row.getEndTime(), now).name());
+        if (row != null) row.setPhase(ActivityPhase.of(row.getStatus(), row.getStartTime(), row.getEndTime(), now).name());
         return row;
     }
 
