@@ -21,6 +21,7 @@ import com.sayohno.marketing.identity.dao.mapper.IamMerchantMapper;
 import com.sayohno.marketing.identity.dao.mapper.IamShopMapper;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.dao.mapper.LinkMapper;
+import com.sayohno.marketing.shortlink.service.RedirectService;
 import com.sayohno.marketing.support.MemoryStockConfiguration;
 import com.sayohno.marketing.support.TestIdentityConfiguration;
 import org.junit.jupiter.api.AfterEach;
@@ -65,6 +66,8 @@ class ActivityFlowTest {
     private IamShopMapper shopMapper;
     @Autowired
     private LinkMapper linkMapper;
+    @Autowired
+    private RedirectService redirectService;
     @Autowired
     private CampaignVisitMapper visitMapper;
     @Autowired
@@ -389,6 +392,36 @@ class ActivityFlowTest {
         ended.setEndTime(now.minusMinutes(1));
         activityMapper.updateById(ended);
         org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> campaignService.assertDirectClaimAllowed(template.getId()));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void shortlinkClicksWithChannelCodeFeedIntoReviewFunnel() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "漏斗券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("五级漏斗活动", now.minusHours(2), now.minusMinutes(5), now.plusDays(1));
+        campaignService.attachCoupon(activity.getId(), template.getId());
+        flowService.place(activity.getId(), 5, 1, "funnel-alloc", new BigDecimal("50.00"));
+        CampaignChannel channel = flowService.addChannel(activity.getId(), "抖音", "dy-ch");
+        campaignService.publish(activity.getId());
+        Link link = linkMapper.selectById(channel.getLinkId());
+
+        // 模拟 2 位访客通过抖音渠道短链跳转，1 位直接跳转
+        redirectService.resolve(link.getShortUri(), "v-click-1", true, channel.getChannelCode());
+        redirectService.resolve(link.getShortUri(), "v-click-2", true, channel.getChannelCode());
+        redirectService.resolve(link.getShortUri(), "v-click-3", true, null);
+        outboxPublisher.publishCycle();
+
+        Map<String, Object> review = flowService.review(activity.getId());
+        Map<String, Object> funnel = (Map<String, Object>) review.get("funnel");
+        assertEquals(3L, funnel.get("clicks"));
+        var dyRow = flowService.report(activity.getId()).stream()
+                .filter(row -> channel.getId().equals(row.get("channelId"))).findFirst().orElseThrow();
+        assertEquals(2L, dyRow.get("clicks"));
     }
 
     @Test

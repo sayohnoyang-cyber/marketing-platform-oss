@@ -15,4 +15,22 @@ public interface LinkAccessLogMapper extends BaseMapper<LinkAccessLog> {
             GROUP BY l.id
             """)
     java.util.List<java.util.Map<String, Object>> byMerchant(@Param("merchantId") long merchantId);
+
+    @Select("""
+            <script>
+            SELECT COUNT(DISTINCT visitor_id) FROM link_access_log
+            WHERE link_id = #{linkId} AND visitor_id IS NOT NULL AND visitor_id != '' AND visitor_id != 'anonymous'
+            <choose>
+              <when test="channelCode != null and channelCode != ''">AND channel_code = #{channelCode}</when>
+              <otherwise>AND (channel_code IS NULL OR channel_code = '')</otherwise>
+            </choose>
+            </script>
+            """)
+    long uniqueClicks(@Param("linkId") long linkId, @Param("channelCode") String channelCode);
+
+    @Select("""
+            SELECT COUNT(DISTINCT visitor_id) FROM link_access_log
+            WHERE link_id = #{linkId} AND visitor_id IS NOT NULL AND visitor_id != '' AND visitor_id != 'anonymous'
+            """)
+    long uniqueLinkClicks(@Param("linkId") long linkId);
 }

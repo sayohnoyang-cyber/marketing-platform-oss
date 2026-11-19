@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS link_access_log (
     event_id VARCHAR(64) NOT NULL,
     link_id BIGINT NOT NULL,
     visitor_id VARCHAR(64) NULL,
+    channel_code VARCHAR(32) NULL,
     visit_time DATETIME NOT NULL,
     device VARCHAR(64) NULL,
     browser VARCHAR(64) NULL,

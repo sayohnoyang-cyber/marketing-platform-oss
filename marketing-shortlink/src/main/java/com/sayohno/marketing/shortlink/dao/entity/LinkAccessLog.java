@@ -14,6 +14,7 @@ public class LinkAccessLog extends CreateOnlyEntity {
     private String eventId;
     private Long linkId;
     private String visitorId;
+    private String channelCode;
     private LocalDateTime visitTime;
     private String device;
     private String browser;

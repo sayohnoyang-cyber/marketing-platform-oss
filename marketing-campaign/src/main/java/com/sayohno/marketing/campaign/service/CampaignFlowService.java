@@ -31,6 +31,7 @@ import com.sayohno.marketing.coupon.service.OfferPlanService;
 import com.sayohno.marketing.identity.service.MerchantAccessService;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.dao.entity.LinkGroup;
+import com.sayohno.marketing.shortlink.dao.mapper.LinkAccessLogMapper;
 import com.sayohno.marketing.shortlink.service.LinkDirectoryService;
 import com.sayohno.marketing.shortlink.service.PublicLinkAddress;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -61,6 +62,7 @@ public class CampaignFlowService {
     private final CampaignClaimIntentMapper intentMapper;
     private final CampaignConversionMapper conversionMapper;
     private final LinkDirectoryService linkDirectoryService;
+    private final LinkAccessLogMapper linkAccessLogMapper;
     private final VoucherClaimService claimService;
     private final OfferInventoryService allocationService;
     private final MerchantAccessService merchantAccessService;
@@ -80,6 +82,7 @@ public class CampaignFlowService {
                                CampaignClaimIntentMapper intentMapper,
                                CampaignConversionMapper conversionMapper,
                                LinkDirectoryService linkDirectoryService,
+                               LinkAccessLogMapper linkAccessLogMapper,
                                VoucherClaimService claimService,
                                OfferInventoryService allocationService,
                                MerchantAccessService merchantAccessService,
@@ -96,6 +99,7 @@ public class CampaignFlowService {
         this.intentMapper = intentMapper;
         this.conversionMapper = conversionMapper;
         this.linkDirectoryService = linkDirectoryService;
+        this.linkAccessLogMapper = linkAccessLogMapper;
         this.claimService = claimService;
         this.allocationService = allocationService;
         this.merchantAccessService = merchantAccessService;
@@ -703,11 +707,13 @@ public class CampaignFlowService {
     }
 
     public List<Map<String, Object>> report(long activityId) {
-        campaignService.requireOwned(activityId);
+        CampaignActivity activity = campaignService.requireOwned(activityId);
         List<CampaignChannel> channels = channelMapper.selectList(Wrappers.<CampaignChannel>lambdaQuery()
                 .eq(CampaignChannel::getActivityId, activityId));
-        List<Map<String, Object>> rows = new java.util.ArrayList<>(channels.stream().map(channel -> channelStats(activityId, channel.getId(), channel.getName(), "CHANNEL")).toList());
-        rows.add(channelStats(activityId, null, "直接访问", "DIRECT"));
+        Long mainLinkId = activity.getMainLinkId();
+        List<Map<String, Object>> rows = new java.util.ArrayList<>(channels.stream()
+                .map(channel -> channelStats(activityId, mainLinkId, channel.getId(), channel.getChannelCode(), channel.getName(), "CHANNEL")).toList());
+        rows.add(channelStats(activityId, mainLinkId, null, null, "直接访问", "DIRECT"));
         return rows;
     }
 
@@ -849,9 +855,21 @@ public class CampaignFlowService {
         body.put("attributedClaims", attributed);
         body.put("reconciled", claimed instanceof Number number && number.longValue() == attributed);
         addRefundSummary(body, activityId, null, false);
-        body.put("visits", visitMapper.uniqueActivityVisitors(activityId));
-        body.put("visitDefinition", "活动内按浏览器访客去重；过滤常见爬虫和不可用入口。各渠道独立去重，不直接相加作为活动总数。");
+        long clicks = activity.getMainLinkId() == null ? 0L : linkAccessLogMapper.uniqueLinkClicks(activity.getMainLinkId());
+        long visits = visitMapper.uniqueActivityVisitors(activityId);
+        long reservations = activeReservations(activityId);
         long redeems = countActivity(activityId, "REDEEM");
+        long refunds = countActivity(activityId, "REFUND");
+        body.put("clicks", clicks);
+        body.put("visits", visits);
+        body.put("funnel", Map.of(
+                "clicks", clicks,
+                "visits", visits,
+                "reservations", reservations,
+                "claims", attributed,
+                "redeems", redeems,
+                "refunds", refunds));
+        body.put("visitDefinition", "短链点击为 302 跳转去重访客，落地页到达为有效入口去重访客；直接打开落地页不经过短链时，到达可能大于点击。各渠道独立去重，不直接相加作为活动总数。");
         if (claimed instanceof Number number && number.longValue() > 0) {
             body.put("redeemRate", BigDecimal.valueOf(redeems).divide(BigDecimal.valueOf(number.longValue()), 4, java.math.RoundingMode.HALF_UP));
         } else {
@@ -861,12 +879,13 @@ public class CampaignFlowService {
         return body;
     }
 
-    private Map<String, Object> channelStats(long activityId, Long channelId, String name, String kind) {
+    private Map<String, Object> channelStats(long activityId, Long mainLinkId, Long channelId, String channelCode, String name, String kind) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("channelId", channelId);
         row.put("name", name);
         row.put("kind", kind);
         row.put("enabled", channelId == null || channelMapper.selectById(channelId).getStatus() == 1);
+        row.put("clicks", mainLinkId == null ? 0L : linkAccessLogMapper.uniqueClicks(mainLinkId, channelCode));
         row.put("visits", visitMapper.uniqueVisitors(activityId, channelId));
         row.put("claims", countMatched(activityId, channelId, "CLAIM"));
         row.put("redeems", countMatched(activityId, channelId, "REDEEM"));

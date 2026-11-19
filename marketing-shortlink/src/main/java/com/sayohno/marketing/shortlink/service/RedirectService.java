@@ -58,10 +58,14 @@ public class RedirectService {
     }
 
     public Link resolve(String shortUri, String visitorId) {
-        return resolve(shortUri, visitorId, true);
+        return resolve(shortUri, visitorId, true, null);
     }
 
     public Link resolve(String shortUri, String visitorId, boolean record) {
+        return resolve(shortUri, visitorId, record, null);
+    }
+
+    public Link resolve(String shortUri, String visitorId, boolean record, String channelCode) {
         if (shortUri == null || !shortUri.matches("[0-9A-Za-z]{2,12}")) {
             throw new BizException(ErrorCode.NOT_FOUND, "短链不存在");
         }
@@ -70,13 +74,13 @@ public class RedirectService {
         Link cached = readCache(full);
         if (cached != null) {
             ensureUsable(full, cached, true);
-            if (record) recordVisit(cached, visitorId);
+            if (record) recordVisit(cached, visitorId, channelCode);
             return cached;
         }
         Link link = load(full, domain, shortUri);
         ensureUsable(full, link, false);
         rememberHit(full, link);
-        if (record) recordVisit(link, visitorId);
+        if (record) recordVisit(link, visitorId, channelCode);
         return link;
     }
 
@@ -217,7 +221,7 @@ public class RedirectService {
         template.opsForValue().set(ShortLinkRedisKeys.gotoMiss(full), MISS, Duration.ofSeconds(60));
     }
 
-    private void recordVisit(Link link, String visitorId) {
+    private void recordVisit(Link link, String visitorId, String channelCode) {
         if (link.getId() == null) {
             return;
         }
@@ -230,6 +234,9 @@ public class RedirectService {
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("linkId", link.getId());
         payload.put("visitorId", visitor);
+        if (channelCode != null && channelCode.matches("[A-Za-z0-9]{1,32}")) {
+            payload.put("channelCode", channelCode);
+        }
         payload.put("occurredAt", LocalDateTime.now().toString());
         try {
             transactionTemplate.executeWithoutResult(status -> outboxStore.append(eventId, VISIT_EVENT,

@@ -50,7 +50,7 @@ cp .env.example .env
 ```bash
 docker compose up -d
 
-# 按文件名顺序执行全部迁移（当前为 V001 至 V014）
+# 按文件名顺序执行全部迁移（当前为 V001 至 V015）
 set -a && . ./.env && set +a
 mysql -h 127.0.0.1 -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" \
   -e "CREATE DATABASE IF NOT EXISTS marketing DEFAULT CHARACTER SET utf8mb4"

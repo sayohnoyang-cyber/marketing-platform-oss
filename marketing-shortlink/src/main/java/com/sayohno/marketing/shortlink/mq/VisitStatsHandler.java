@@ -65,11 +65,13 @@ public class VisitStatsHandler implements OutboxHandler {
         }
         long linkId = payload.path("linkId").asLong();
         String visitorId = payload.path("visitorId").asText("anonymous");
+        String channelCode = payload.hasNonNull("channelCode") ? payload.get("channelCode").asText(null) : null;
         LocalDateTime occurredAt = LocalDateTime.parse(payload.get("occurredAt").asText());
         LinkAccessLog access = new LinkAccessLog();
         access.setEventId(event.getEventId());
         access.setLinkId(linkId);
         access.setVisitorId(visitorId);
+        access.setChannelCode(channelCode);
         access.setVisitTime(occurredAt);
         accessLogMapper.insert(access);
         LocalDate day = occurredAt.toLocalDate();

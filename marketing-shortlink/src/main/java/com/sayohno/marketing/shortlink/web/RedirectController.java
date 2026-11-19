@@ -27,7 +27,9 @@ public class RedirectController {
     @GetMapping("/s/{shortUri}")
     public ResponseEntity<Void> redirect(@PathVariable String shortUri, HttpServletRequest request, jakarta.servlet.http.HttpServletResponse httpResponse) {
         String visitor = com.sayohno.marketing.common.web.VisitorIdentity.resolve(request, httpResponse);
-        Link link = redirectService.resolve(shortUri, visitor, com.sayohno.marketing.common.web.VisitorIdentity.humanCandidate(request));
+        Link link = redirectService.resolve(shortUri, visitor,
+                com.sayohno.marketing.common.web.VisitorIdentity.humanCandidate(request),
+                request.getParameter("c"));
         String destination = localActivityDestination(link.getOriginUrl(), properties.getShortlink().getPublicBaseUrl());
         ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.FOUND)
                 .location(URI.create(QueryMerge.merge(destination, request.getQueryString())))

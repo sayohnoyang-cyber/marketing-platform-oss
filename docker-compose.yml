@@ -23,6 +23,11 @@ services:
       - ./marketing-app/src/main/resources/db/V008__simple_workspace_activity.sql:/docker-entrypoint-initdb.d/V008__simple_workspace_activity.sql:ro
       - ./marketing-app/src/main/resources/db/V009__refund_amount_attendance.sql:/docker-entrypoint-initdb.d/V009__refund_amount_attendance.sql:ro
       - ./marketing-app/src/main/resources/db/V010__external_link_activity.sql:/docker-entrypoint-initdb.d/V010__external_link_activity.sql:ro
+      - ./marketing-app/src/main/resources/db/V011__campaign_create_request.sql:/docker-entrypoint-initdb.d/V011__campaign_create_request.sql:ro
+      - ./marketing-app/src/main/resources/db/V012__offer_domain_rename.sql:/docker-entrypoint-initdb.d/V012__offer_domain_rename.sql:ro
+      - ./marketing-app/src/main/resources/db/V013__offer_enum_and_policy_keys.sql:/docker-entrypoint-initdb.d/V013__offer_enum_and_policy_keys.sql:ro
+      - ./marketing-app/src/main/resources/db/V014__rename_inventory_claim_limit.sql:/docker-entrypoint-initdb.d/V014__rename_inventory_claim_limit.sql:ro
+      - ./marketing-app/src/main/resources/db/V015__link_access_channel_code.sql:/docker-entrypoint-initdb.d/V015__link_access_channel_code.sql:ro
 
   redis:
     image: redis:7.2
