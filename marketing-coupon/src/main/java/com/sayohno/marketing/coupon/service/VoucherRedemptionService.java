@@ -116,6 +116,60 @@ public class VoucherRedemptionService {
         return settlement;
     }
 
+    /**
+     * 商家核销台一步直接核销（适用于线下扫码/输券码场景）：在同一事务内完成校验、算价、核销与事件投递。
+     * 同订单号且参数一致时幂等返回；若订单已处于锁定态则直接流转为已核销。
+     */
+    @Transactional
+    public VoucherRedemption redeemDirect(long userId, long couponId, String orderNo, BigDecimal orderAmount, String goodsNumber) {
+        requireOrder(orderNo);
+        validateMoney(orderAmount, false, "订单金额");
+        VoucherRedemption existing = find(userId, couponId, orderNo);
+        if (existing != null) {
+            BigDecimal discount = DiscountCalculator.discount(
+                    requireTemplate(userMapper.selectById(couponId).getPlanId()), orderAmount, goodsNumber);
+            if (discount.compareTo(existing.getDiscountAmount()) != 0
+                    || (existing.getOrderAmount() != null && orderAmount.compareTo(existing.getOrderAmount()) != 0)) {
+                throw new BizException(ErrorCode.CONFLICT, "同一订单的优惠参数不一致");
+            }
+            if (existing.getStatus() == RedemptionStatus.COMPLETED) {
+                return existing;
+            }
+            if (existing.getStatus() == RedemptionStatus.HELD) {
+                return pay(userId, couponId, orderNo);
+            }
+            throw new BizException(ErrorCode.CONFLICT, "该订单的优惠券结算已结束");
+        }
+        IssuedVoucher coupon = requireUsable(userId, couponId);
+        if (openSettlement(userId, couponId) != null) {
+            throw new BizException(ErrorCode.CONFLICT, "优惠券已锁定或已核销");
+        }
+        BigDecimal discount = DiscountCalculator.discount(requireTemplate(coupon.getPlanId()), orderAmount, goodsNumber);
+        int used = userMapper.update(null, Wrappers.<IssuedVoucher>lambdaUpdate()
+                .eq(IssuedVoucher::getId, couponId)
+                .eq(IssuedVoucher::getUserId, userId)
+                .eq(IssuedVoucher::getStatus, VoucherStatus.AVAILABLE)
+                .set(IssuedVoucher::getStatus, VoucherStatus.REDEEMED));
+        if (used != 1) {
+            throw new BizException(ErrorCode.CONFLICT, "优惠券状态不允许核销");
+        }
+        VoucherRedemption settlement = new VoucherRedemption();
+        settlement.setUserId(userId);
+        settlement.setVoucherId(couponId);
+        settlement.setOrderNo(orderNo);
+        settlement.setDiscountAmount(discount);
+        settlement.setOrderAmount(orderAmount);
+        settlement.setStatus(RedemptionStatus.COMPLETED);
+        try {
+            settlementMapper.insert(settlement);
+        } catch (DataIntegrityViolationException exception) {
+            throw new BizException(ErrorCode.CONFLICT, "订单与优惠券已存在结算记录");
+        }
+        outboxStore.append("redeem:" + settlement.getId(), REDEEM_EVENT, String.valueOf(couponId),
+                "{\"settlementId\":" + settlement.getId() + ",\"voucherId\":" + couponId + "}");
+        return settlement;
+    }
+
     @Transactional
     public VoucherRedemption refund(long userId, long couponId, String orderNo) {
         return refund(userId, couponId, orderNo, null);

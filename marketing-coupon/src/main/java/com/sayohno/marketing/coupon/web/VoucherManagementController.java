@@ -34,6 +34,19 @@ public class VoucherManagementController {
         return Results.success(view);
     }
 
+    @PostMapping("/{id}/quote")
+    public Result<?> quote(@PathVariable long id, @Valid @RequestBody OrderVoucherRequest request) {
+        var coupon = wallet.requireManaged(id);
+        return Results.success(settlements.quote(coupon.getUserId(), id, request.getOrderAmount(), request.getGoodsNumber()));
+    }
+
+    @PostMapping("/{id}/redeem")
+    public Result<?> redeemDirect(@PathVariable long id, @Valid @RequestBody OrderVoucherRequest request) {
+        var coupon = wallet.requireManaged(id);
+        return Results.success(settlements.redeemDirect(
+                coupon.getUserId(), id, request.getOrderNo(), request.getOrderAmount(), request.getGoodsNumber()));
+    }
+
     @PostMapping("/{id}/complete")
     public Result<?> pay(@PathVariable long id, @Valid @RequestBody OrderVoucherRequest request) {
         var coupon = wallet.requireManaged(id);

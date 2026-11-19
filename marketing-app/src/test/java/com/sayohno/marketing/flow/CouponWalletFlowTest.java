@@ -100,6 +100,47 @@ class CouponWalletFlowTest {
                 .andExpect(status().isNotFound());
     }
 
+    @Test void merchantCanRedeemAvailableVoucherDirectlyWithIdempotencyAndIsolation() throws Exception {
+        var merchant = register("MERCHANT");
+        var other = register("MERCHANT");
+        var user = register("USER");
+        UserContext.set(CurrentUser.builder().userId(merchant.path("userId").asLong()).merchantId(merchant.path("merchantId").asLong())
+                .roles(Set.of(UserRole.USER, UserRole.OWNER)).build());
+        var now = LocalDateTime.now();
+        var template = templates.create(null, "一步核销券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10, now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":2}", "{\"minSpend\":\"10\",\"capAmount\":\"5.00\"}");
+        var voucher = claims.claim(user.path("userId").asLong(), template.getId(), IssuerScope.MERCHANT, "direct-redeem-1");
+        UserContext.clear();
+
+        String owner = merchant.path("token").asText();
+        String managed = "/api/merchant/vouchers/" + voucher.getId();
+        String redeemBody = "{\"orderNo\":\"POS-1001\",\"orderAmount\":50}";
+
+        // 跨工作空间拒绝
+        mvc.perform(post(managed + "/redeem").header("Authorization", "Bearer " + other.path("token").asText())
+                        .contentType(MediaType.APPLICATION_JSON).content(redeemBody))
+                .andExpect(status().isNotFound());
+        // 商家试算
+        mvc.perform(post(managed + "/quote").header("Authorization", "Bearer " + owner)
+                        .contentType(MediaType.APPLICATION_JSON).content(redeemBody))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data").value(5.0));
+        // 未锁定可用券一步直接核销
+        mvc.perform(post(managed + "/redeem").header("Authorization", "Bearer " + owner)
+                        .contentType(MediaType.APPLICATION_JSON).content(redeemBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("completed"))
+                .andExpect(jsonPath("$.data.discountAmount").value(5.0));
+        // 同订单号同金额幂等重试
+        mvc.perform(post(managed + "/redeem").header("Authorization", "Bearer " + owner)
+                        .contentType(MediaType.APPLICATION_JSON).content(redeemBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("completed"));
+        // 同订单号异金额返回冲突
+        mvc.perform(post(managed + "/redeem").header("Authorization", "Bearer " + owner)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"orderNo\":\"POS-1001\",\"orderAmount\":80}"))
+                .andExpect(status().isConflict());
+    }
+
     private JsonNode register(String type) throws Exception {
         var body = Map.of("username", "w_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10), "password", "testPassword123", "registerType", type, "merchantName", "测试工作空间");
         var result = mvc.perform(post("/api/identity/register").contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)))
