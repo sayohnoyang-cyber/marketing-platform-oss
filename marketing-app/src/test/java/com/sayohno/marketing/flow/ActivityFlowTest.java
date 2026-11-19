@@ -31,6 +31,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.sayohno.marketing.common.outbox.OutboxPublisher;
+import com.sayohno.marketing.common.outbox.OutboxStore;
 import com.sayohno.marketing.coupon.dao.entity.ClaimTicket;
 import com.sayohno.marketing.coupon.dao.mapper.ClaimTicketMapper;
 import com.sayohno.marketing.coupon.dao.mapper.OfferPlanMapper;
@@ -71,6 +72,8 @@ class ActivityFlowTest {
     private PlatformTransactionManager transactionManager;
     @Autowired
     private OutboxPublisher outboxPublisher;
+    @Autowired
+    private OutboxStore outboxStore;
     @Autowired
     private ClaimTicketMapper claimTicketMapper;
     @Autowired
@@ -308,6 +311,18 @@ class ActivityFlowTest {
         Map<String, Object> failed = flowService.claimStatus(99L, activity.getId(), template.getId(), "comp-req-1");
         assertEquals("FAILED", failed.get("status"));
         org.junit.jupiter.api.Assertions.assertNull(stockGateway.readAllocationHold(offer.getInventoryId(), ticket.getId()));
+    }
+
+    @Test
+    void outboxPublishCycleDrainsMultipleBatchesInSingleRound() {
+        String prefix = "cycle-" + UUID.randomUUID() + "-";
+        int total = 450;
+        for (int i = 0; i < total; i++) {
+            outboxStore.append(prefix + i, "campaign.conversion", "999",
+                    "{\"eventType\":\"CLAIM\",\"voucherId\":" + (100000 + i) + "}");
+        }
+        int delivered = outboxPublisher.publishCycle();
+        org.junit.jupiter.api.Assertions.assertTrue(delivered >= total);
     }
 
     @Test

@@ -18,18 +18,43 @@ public class OutboxPublisher {
         this.properties = properties;
     }
 
-    @Scheduled(fixedDelayString = "${OUTBOX_PUBLISH_DELAY:2000}")
+    @Scheduled(fixedDelayString = "${OUTBOX_PUBLISH_DELAY:200}")
     public void scheduled() {
         if (properties.getOutbox().isPublishEnabled()) {
-            publishDue(50);
+            publishCycle();
         }
     }
 
+    /**
+     * 单轮连续批量投递：每批拉取 batchSize 条，若本批满载则继续拉取，直到队列见底或达到 maxPerCycle 上限。
+     */
+    public int publishCycle() {
+        int batchSize = Math.max(1, properties.getOutbox().getBatchSize());
+        int maxPerCycle = Math.max(batchSize, properties.getOutbox().getMaxPerCycle());
+        int totalDelivered = 0;
+        int totalProcessed = 0;
+        while (totalProcessed < maxPerCycle) {
+            int limit = Math.min(batchSize, maxPerCycle - totalProcessed);
+            BatchOutcome outcome = publishBatch(limit);
+            totalDelivered += outcome.delivered();
+            totalProcessed += outcome.fetched();
+            if (outcome.fetched() < limit) {
+                break;
+            }
+        }
+        return totalDelivered;
+    }
+
     public int publishDue(int limit) {
+        return publishBatch(limit).delivered();
+    }
+
+    private BatchOutcome publishBatch(int limit) {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime stale = now.minus(properties.getOutbox().getSendingLease());
+        var due = mapper.findDue(now, stale, limit);
         int delivered = 0;
-        for (OutboxEvent event : mapper.findDue(now, stale, limit)) {
+        for (OutboxEvent event : due) {
             if (mapper.claim(event.getId(), now, stale) != 1) {
                 continue;
             }
@@ -47,7 +72,10 @@ public class OutboxPublisher {
                         message, properties.getOutbox().getMaxRetries());
             }
         }
-        return delivered;
+        return new BatchOutcome(due.size(), delivered);
+    }
+
+    private record BatchOutcome(int fetched, int delivered) {
     }
 
     public boolean replay(String eventId) {

@@ -75,6 +75,8 @@ public class MarketingProperties {
         private int maxRetries = 8;
         private Duration retryDelay = Duration.ofSeconds(5);
         private Duration sendingLease = Duration.ofSeconds(30);
+        private int batchSize = 200;
+        private int maxPerCycle = 2000;
     }
 
     @Data
