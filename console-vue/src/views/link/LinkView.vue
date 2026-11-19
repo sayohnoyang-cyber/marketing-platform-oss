@@ -83,7 +83,8 @@
       <form v-else @submit.prevent="createPlain">
         <label class="field">短链名称<input v-model.trim="linkName" required maxlength="128" /></label>
         <label class="field">原始链接<input v-model.trim="originUrl" type="url" required placeholder="https://" /></label>
-        <label class="field">归属活动（选填）<ActivityPicker v-model="createActivity" label="归属活动" clear-label="不归属活动" /></label>
+        <!-- 选择器里还有搜索框和选项按钮，不能包在 label 里，否则点标题只会激活第一个按钮。 -->
+        <div class="field">归属活动（选填）<ActivityPicker v-model="createActivity" label="归属活动" clear-label="不归属活动" /></div>
         <p v-if="formError" class="form-alert" role="alert">{{ formError }}</p>
         <div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="show = false">取消</button><button class="btn primary" :disabled="saving">{{ saving ? '生成中…' : '生成短链' }}</button></div>
       </form>

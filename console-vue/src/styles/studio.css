@@ -221,8 +221,9 @@ td small { color: var(--muted); font-size: 12px; }
 .slegend { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 12px; font-size: 12px; color: var(--ink2); }
 .slegend u { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; text-decoration: none; }
 .seg { display: inline-flex; background: var(--cloud); padding: 3px; border-radius: 10px; gap: 2px; }
-.seg button { background: transparent; border-radius: 8px; padding: 6px 12px; font-size: 13px; color: var(--muted); }
-.seg button.active { background: #fff; color: var(--ink); box-shadow: 0 1px 3px #14141320; }
+/* 触发按钮带 .btn 边框时会盖住分段选中态，点开后看不出变化。 */
+.seg > button, .seg > .activity-picker > .picker-trigger { background: transparent; border: 0; box-shadow: none; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 400; color: var(--muted); }
+.seg > button.active, .seg > .activity-picker > .picker-trigger.active { background: #fff; color: var(--ink); box-shadow: 0 1px 3px #14141320; }
 .emptyhint { padding: 14px 24px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); background: var(--bg); }
 .banner { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--tint); border: 1px solid #efd9ce; border-radius: 14px; padding: 16px 20px; margin-bottom: 18px; }
 .banner strong { font-size: 14px; }
@@ -523,8 +524,10 @@ input[readonly] { background: var(--bg); color: var(--muted); }
 .tableoverflow { max-width: 100%; overscroll-behavior-inline: contain; }
 .tabletop { gap: 16px; }
 .tabletop > span { flex-shrink: 0; }
-.flow-filters { display: flex; min-width: 0; max-width: 100%; overflow-x: auto; flex: 1; }
-.flow-filters button { flex-shrink: 0; white-space: nowrap; }
+/* overflow-x: auto 会把 overflow-y 一并算成 auto，活动下拉层被裁在筛选条里，点击后像没有反应。 */
+.flow-filters { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; overflow: visible; flex: 1; }
+.flow-filters > button, .flow-filters > .activity-picker > .picker-trigger { flex-shrink: 0; white-space: nowrap; }
+.field .activity-picker { margin-top: 8px; }
 .copybar select { min-width: 0; flex: 1; max-width: 100%; padding: 9px 12px; border: 1px solid #d9d6c9; border-radius: 10px; background: #fff; color: var(--ink2); }
 .flow-summary > div:first-child { flex: 1; min-width: 200px; }
 .flow-summary .pill { vertical-align: middle; margin-left: 10px; }
@@ -542,7 +545,7 @@ input[readonly] { background: var(--bg); color: var(--muted); }
 .tk-foot { flex-wrap: wrap; }
 .tk-foot > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .tk-foot .linkbtn { display: inline-block; margin-right: 8px; }
-.seg button { min-height: 34px; }
+.seg > button, .seg > .activity-picker > .picker-trigger { min-height: 34px; }
 .stepper button { min-height: 44px; }
 .modalback { padding: 24px; }
 .studio-modal { display: flex; flex-direction: column; padding: 0; max-height: calc(100dvh - 48px); overflow: hidden; }

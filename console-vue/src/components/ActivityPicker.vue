@@ -1,6 +1,6 @@
 <template>
   <div class="activity-picker">
-    <button type="button" class="btn picker-trigger" :aria-label="label" :aria-expanded="opened" @click="toggle">{{ modelValue?.name || label }} <span>⌄</span></button>
+    <button type="button" class="btn picker-trigger" :class="{ active: Boolean(modelValue) || opened }" :aria-label="label" :aria-expanded="opened" @click="toggle">{{ modelValue?.name || label }} <span>⌄</span></button>
     <div v-if="opened" class="picker-panel" @keydown.esc="close">
       <div class="picker-search"><input v-model.trim="keyword" :aria-label="`${label}名称`" placeholder="搜索活动名称" maxlength="128" @keydown.enter.prevent.stop="search" /><button type="button" class="linkbtn" @click="search">搜索</button></div>
       <button type="button" class="picker-option" @click="choose(null)">{{ clearLabel }}</button>
@@ -23,7 +23,8 @@ export default {
   methods: {
     toggle() { this.opened = !this.opened; if (this.opened) this.search() },
     close() { this.opened = false },
-    outside(event) { if (!this.$el.contains(event.target)) this.close() },
+    // 点选项时列表可能先被换掉，目标节点已经不在文档里，不能当成点到组件外面。
+    outside(event) { if (event.target?.isConnected && !this.$el.contains(event.target)) this.close() },
     choose(item) { this.$emit('update:modelValue', item); this.close() },
     search() { this.load(1) },
     async load(page) {
@@ -44,7 +45,10 @@ export default {
 }
 </script>
 <style scoped>
-.activity-picker { position: relative; min-width: 0; }.picker-trigger { max-width: 100%; overflow-wrap: anywhere; text-align: left; }.picker-trigger span { margin-left: 12px; }
+.activity-picker { position: relative; min-width: 0; }
+/* 打开时抬高整层，避免下拉被后面的表头盖住，看起来像没有点开。 */
+.activity-picker:has(.picker-panel) { z-index: 40; }
+.picker-trigger { max-width: 100%; overflow-wrap: anywhere; text-align: left; }.picker-trigger span { margin-left: 12px; }
 .picker-panel { position: absolute; z-index: 30; top: calc(100% + 8px); left: 0; width: min(310px,calc(100vw - 64px)); max-height: 360px; overflow-y: auto; padding: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 30px #14141312; }
-.picker-search { display: flex; gap: 8px; margin-bottom: 8px; }.picker-panel input { min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); color: var(--ink); }.picker-option { display: block; width: 100%; text-align: left; padding: 9px; border-radius: 6px; overflow-wrap: anywhere; }.picker-option:hover,.picker-option.selected { background: var(--tint); color: var(--clay); }
+.picker-search { display: flex; gap: 8px; margin-bottom: 8px; }.picker-panel input { min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--bg); color: var(--ink); }.picker-option { display: block; width: 100%; text-align: left; padding: 9px; border-radius: 6px; background: transparent; color: var(--ink); white-space: normal; overflow-wrap: anywhere; }.picker-option:hover,.picker-option.selected { background: var(--tint); color: var(--clay); }
 </style>
