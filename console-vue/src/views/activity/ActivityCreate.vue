@@ -47,11 +47,13 @@
           <p v-if="loading" class="loading">正在读取券库…</p>
           <p v-else-if="loadError" class="error" role="alert">{{ loadError }} <button class="linkbtn" @click="load">重试</button></p>
           <EmptyState v-else-if="!templates.length" title="暂无优惠券"><router-link class="btn" to="/coupons">前往券库</router-link></EmptyState>
-          <CouponChoice v-show="!loading && !loadError" v-for="item in templates" :key="item.id" :chosen="form.planId === String(item.id)" :name="item.title" :face="couponFace(item.benefitPolicy)" :rule="ruleText(item)" :title="validText(item)" @click="choose(item)">可投放 {{ formatNumber(item.inventoryQty) }} 张 · 至 {{ clockLabel(item.usableUntil).slice(0, 10) }}</CouponChoice>
+          <!-- 仅允许选用生效中且仍有剩余可投放库存的券模板 -->
+          <CouponChoice v-show="!loading && !loadError" v-for="item in templates" :key="item.id" :chosen="form.planId === String(item.id)" :name="item.title" :face="couponFace(item.benefitPolicy)" :rule="ruleText(item)" :title="validText(item)" :disabled="item.status !== 'open' || (Number(item.inventoryQty) <= 0 && form.planId !== String(item.id))" @click="choose(item)">{{ item.status !== 'open' ? '已停发 · ' : '' }}可投放 {{ formatNumber(item.inventoryQty) }} 张 · 至 {{ clockLabel(item.usableUntil).slice(0, 10) }}</CouponChoice>
           <template v-if="selected">
             <div class="checkrow">
               <span>投放数量</span>
-              <input v-model.number="form.quantity" aria-label="投放数量" type="number" min="1" :max="selected.stock" />
+              <!-- 后端返回的可投放剩余字段为 inventoryQty，而非旧字段 stock -->
+              <input v-model.number="form.quantity" aria-label="投放数量" type="number" min="1" :max="selected.inventoryQty" />
             </div>
             <div class="checkrow">
               <span>每人限领</span>
@@ -149,7 +151,8 @@ export default {
     checks() {
       const coupon = this.selected
       const covered = coupon && this.timeOk && this.covers(coupon)
-      const stockOk = coupon && Number.isInteger(Number(this.form.quantity)) && Number(this.form.quantity) >= 1 && Number(this.form.quantity) <= Number(coupon.stock)
+      // 校验投放数量是否在券模板当前可投放剩余（inventoryQty）范围内
+      const stockOk = coupon && Number.isInteger(Number(this.form.quantity)) && Number(this.form.quantity) >= 1 && Number(this.form.quantity) <= Number(coupon.inventoryQty)
       const budgetOk = coupon && this.giveCents() <= this.budgetCents()
       return [
         { ok: Boolean(this.form.name), label: '活动名称' },
@@ -236,9 +239,12 @@ export default {
       return amount == null ? 0 : Math.round(Number(amount) * 100)
     },
     choose(item) {
-      this.form.planId = this.form.planId === String(item.id) ? '' : String(item.id)
-      if (this.selected && Number(this.form.quantity) > Number(this.selected.stock)) {
-        this.form.quantity = Number(this.selected.stock) || 1
+      const isSelected = this.form.planId === String(item.id)
+      // 已停发或无剩余库存的券不允许新选，但允许取消已选中的旧草稿项
+      if (!isSelected && (item.status !== 'open' || Number(item.inventoryQty) <= 0)) return
+      this.form.planId = isSelected ? '' : String(item.id)
+      if (this.selected && Number(this.form.quantity) > Number(this.selected.inventoryQty)) {
+        this.form.quantity = Number(this.selected.inventoryQty) || 1
       }
       if (this.form.maxClaimsPerUser > this.personLimit(this.selected)) this.form.maxClaimsPerUser = 1
     },
@@ -304,6 +310,8 @@ export default {
         return
       }
       if (!this.plan && this.form.planId && !this.selected) { this.error = '所选优惠券已不可用，请重新选择'; return }
+      // 防止草稿恢复或复制历史活动时带入已停发的券模板
+      if (!this.plan && this.selected && this.selected.status !== 'open') { this.error = '所选优惠券已停发，请重新选择生效中的优惠券'; return }
       if (!this.plan && this.selected && !this.checks[2].ok) { this.error = '优惠券有效期未覆盖活动时间'; return }
       if (!this.plan && this.selected && !this.checks[3].ok) {
         this.error = '投放数量超过可投放剩余'

@@ -70,7 +70,8 @@ export default {
       return limit || 1
     },
     sliderMax() {
-      const stock = Number(this.selected?.stock || 0)
+      // 使用后端返回的剩余可投放库存 inventoryQty（原 stock 字段已废弃）
+      const stock = Number(this.selected?.inventoryQty || 0)
       const same = String(this.activity.planId || '') === this.form.planId
       const held = same ? Number(this.activity.quantity || 0) : 0
       return Math.max(1, stock + held)
