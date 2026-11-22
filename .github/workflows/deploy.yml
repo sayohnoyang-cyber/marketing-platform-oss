@@ -28,11 +28,11 @@ jobs:
           java-version: '17'
           cache: maven
 
-      # 测试依赖 MySQL/Redis 容器，这里只打包；测试请在本地或单独的 CI 里跑
+      # 领券回归测试随打包执行，测试失败会阻止上传。
       - name: Build backend jar
         run: |
           chmod +x mvnw
-          ./mvnw -B -ntp -DskipTests package
+          ./mvnw -B -ntp package
           ls -lh marketing-app/target/*.jar
 
       - uses: actions/setup-node@v4
@@ -47,6 +47,7 @@ jobs:
           VITE_PUBLIC_SHORTLINK_ORIGIN: http://${{ secrets.DEPLOY_HOST }}
         run: |
           npm ci
+          npm run test:models
           npm run build
 
       - name: Assemble release bundle

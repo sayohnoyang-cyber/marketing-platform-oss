@@ -51,6 +51,10 @@ public class VoucherEventHandler implements OutboxHandler {
                 if (payload.path("voucherId").asLong(0) <= 0) {
                     throw new IllegalArgumentException("优惠券事件缺少 voucherId");
                 }
+                // 老版本成功事件没有票据编号；新事件可重复删除同一标记，失败由 Outbox 重投。
+                if (VoucherClaimService.CLAIM_EVENT.equals(received.getEventType()) && payload.has("requestRowId")) {
+                    claimService.releaseIssuedHold(payload.get("requestRowId").asLong(), payload.path("inventoryId").asLong());
+                }
             } catch (IllegalArgumentException exception) {
                 throw exception;
             } catch (Exception exception) {

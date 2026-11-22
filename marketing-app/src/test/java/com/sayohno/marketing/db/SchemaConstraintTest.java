@@ -39,7 +39,9 @@ class SchemaConstraintTest {
                         "/db/V011__campaign_create_request.sql",
                         "/db/V012__offer_domain_rename.sql",
                         "/db/V013__offer_enum_and_policy_keys.sql",
-                        "/db/V014__rename_inventory_claim_limit.sql"
+                        "/db/V014__rename_inventory_claim_limit.sql",
+                        "/db/V015__link_access_channel_code.sql",
+                        "/db/V016__grant_batch_input.sql"
                 }) {
                     String sql = new String(SchemaConstraintTest.class.getResourceAsStream(file).readAllBytes(), StandardCharsets.UTF_8);
                     for (String part : sql.replaceAll("(?m)^--.*$", "").split(";")) {

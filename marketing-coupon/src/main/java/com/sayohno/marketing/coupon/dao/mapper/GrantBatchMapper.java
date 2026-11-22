@@ -6,11 +6,20 @@ import com.sayohno.marketing.coupon.enums.GrantBatchStatus;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Select;
 
 import java.time.LocalDateTime;
 
 @Mapper
 public interface GrantBatchMapper extends BaseMapper<GrantBatch> {
+    @Update("UPDATE grant_batch SET input_file = #{file} WHERE id = #{id}")
+    int saveInput(@Param("id") long id, @Param("file") byte[] file);
+
+    record BatchInput(byte[] contents) {}
+
+    @Select("SELECT input_file AS contents FROM grant_batch WHERE id = #{id} AND input_file IS NOT NULL")
+    BatchInput loadInput(@Param("id") long id);
+
     @Update("""
             UPDATE grant_batch
             SET status = 'running', owner_token = #{token}, lease_until = #{leaseUntil}, update_time = #{now}
@@ -49,7 +58,7 @@ public interface GrantBatchMapper extends BaseMapper<GrantBatch> {
 
     @Update("""
             UPDATE grant_batch
-            SET status = #{status.code}, completion_time = #{now}, progress = 100, owner_token = NULL, update_time = #{now}
+            SET status = #{status.code}, completion_time = #{now}, input_file = NULL, progress = 100, owner_token = NULL, update_time = #{now}
             WHERE id = #{id} AND owner_token = #{token} AND status = 'running'
             """)
     int finishOwned(@Param("id") long id,

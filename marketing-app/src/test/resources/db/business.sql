@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS grant_batch (
     plan_id BIGINT NOT NULL,
     batch_code VARCHAR(64) NOT NULL,
     file_path VARCHAR(512) NOT NULL,
+    input_file BLOB NULL,
     run_at DATETIME NULL,
     status VARCHAR(32) NOT NULL,
     progress INT NOT NULL DEFAULT 0,

@@ -2,6 +2,7 @@ package com.sayohno.marketing.flow;
 
 import com.alibaba.excel.EasyExcel;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.sayohno.marketing.common.config.MarketingProperties;
 import com.sayohno.marketing.common.context.CurrentUser;
 import com.sayohno.marketing.common.context.UserContext;
 import com.sayohno.marketing.common.context.UserRole;
@@ -11,20 +12,23 @@ import com.sayohno.marketing.common.outbox.ConsumerInboxMapper;
 import com.sayohno.marketing.common.outbox.OutboxEvent;
 import com.sayohno.marketing.common.outbox.OutboxEventMapper;
 import com.sayohno.marketing.common.outbox.OutboxPublisher;
-import com.sayohno.marketing.coupon.enums.*;
+import com.sayohno.marketing.common.outbox.OutboxStore;
 import com.sayohno.marketing.coupon.dao.entity.ClaimTicket;
 import com.sayohno.marketing.coupon.dao.entity.GrantBatch;
-import com.sayohno.marketing.coupon.dao.entity.OfferPlan;
 import com.sayohno.marketing.coupon.dao.entity.IssuedVoucher;
+import com.sayohno.marketing.coupon.dao.entity.OfferPlan;
 import com.sayohno.marketing.coupon.dao.mapper.ClaimTicketMapper;
 import com.sayohno.marketing.coupon.dao.mapper.GrantBatchMapper;
-import com.sayohno.marketing.coupon.dao.mapper.OfferPlanMapper;
 import com.sayohno.marketing.coupon.dao.mapper.IssuedVoucherMapper;
+import com.sayohno.marketing.coupon.dao.mapper.OfferInventoryMapper;
+import com.sayohno.marketing.coupon.dao.mapper.OfferPlanMapper;
+import com.sayohno.marketing.coupon.enums.*;
 import com.sayohno.marketing.coupon.service.BatchUserRow;
-import com.sayohno.marketing.coupon.service.VoucherClaimService;
-import com.sayohno.marketing.coupon.service.VoucherRedemptionService;
 import com.sayohno.marketing.coupon.service.GrantBatchService;
 import com.sayohno.marketing.coupon.service.OfferPlanService;
+import com.sayohno.marketing.coupon.service.VoucherClaimService;
+import com.sayohno.marketing.coupon.service.VoucherRedemptionService;
+import com.sayohno.marketing.coupon.stock.OfferStockGateway;
 import com.sayohno.marketing.identity.IamStatus;
 import com.sayohno.marketing.identity.dao.entity.IamMerchant;
 import com.sayohno.marketing.identity.dao.entity.IamShop;
@@ -42,10 +46,13 @@ import com.sayohno.marketing.support.MemoryStockConfiguration;
 import com.sayohno.marketing.support.TestIdentityConfiguration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.AdditionalAnswers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
@@ -55,13 +62,23 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -103,6 +120,83 @@ class PhaseBFlowTest {
     private ConsumerInboxMapper inboxMapper;
     @Autowired
     private IamUserMapper iamUserMapper;
+
+    @Autowired
+    private OfferStockGateway stockGateway;
+    @Autowired
+    private PlatformTransactionManager transactions;
+    @Autowired
+    private OfferInventoryMapper inventoryMapper;
+    @Autowired
+    private OutboxStore outboxStore;
+    @Autowired
+    private MarketingProperties properties;
+
+    private VoucherClaimService worker(OfferStockGateway stock, PlatformTransactionManager manager) {
+        return new VoucherClaimService(templateMapper, userMapper, claimRequestMapper, inventoryMapper,
+                stock, outboxStore, properties, manager);
+    }
+
+    private OfferPlan claimPlan(int limit) {
+        Shop shop = shop();
+        asMerchant(shop);
+        return templateService.create(shop.storeCode(), "领券恢复测试", IssuerScope.MERCHANT, ApplyScope.STOREWIDE,
+                null, BenefitKind.AMOUNT_OFF, 2, LocalDateTime.now().minusMinutes(1), LocalDateTime.now().plusDays(1),
+                "{\"maxClaimsPerUser\":" + limit + "}", "{\"capAmount\":\"1.00\"}");
+    }
+
+    @Test
+    void staleWorkerCannotIssueOrCompensateAfterLeaseTakeover() throws Exception {
+        OfferPlan plan = claimPlan(2);
+        CountDownLatch reserved = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        PlatformTransactionManager paused = mock(PlatformTransactionManager.class, AdditionalAnswers.delegatesTo(transactions));
+        AtomicBoolean firstCommit = new AtomicBoolean(true);
+        doAnswer(call -> {
+            transactions.commit(call.getArgument(0, TransactionStatus.class));
+            if (firstCommit.getAndSet(false)) {
+                // 第一笔事务已提交预扣，模拟执行者在开始发券前暂停。
+                reserved.countDown();
+                assertTrue(resume.await(10, TimeUnit.SECONDS));
+            }
+            return null;
+        }).when(paused).commit(any());
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            var old = pool.submit(() -> worker(stockGateway, paused).claim(710, plan.getId(), IssuerScope.MERCHANT, "takeover"));
+            assertTrue(reserved.await(10, TimeUnit.SECONDS));
+            ClaimTicket row = claimRequestMapper.selectOne(Wrappers.<ClaimTicket>lambdaQuery().eq(ClaimTicket::getPlanId, plan.getId()));
+            LocalDateTime takeover = row.getLeaseUntil().plusSeconds(1);
+            assertEquals(1, claimRequestMapper.acquireLease(row.getId(), "new-worker", LocalDateTime.now().minusMinutes(1), takeover));
+            resume.countDown();
+            assertTrue(assertThrows(ExecutionException.class, () -> old.get(10, TimeUnit.SECONDS)).getCause() instanceof BizException);
+            assertEquals(1, stockGateway.readHold(row.getId()));
+            assertEquals(2, templateMapper.selectById(plan.getId()).getInventoryQty());
+            claimService.recoverStuck(Duration.ZERO);
+            var voucher = claimService.claim(710, plan.getId(), IssuerScope.MERCHANT, "takeover");
+            assertEquals(voucher.getId(), claimRequestMapper.selectById(row.getId()).getVoucherId());
+            assertEquals(1, claimService.myCoupons(710, 1, 10).getTotal());
+            assertEquals(1, templateMapper.selectById(plan.getId()).getInventoryQty());
+        } finally {
+            resume.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void cleanupFailurePreservesQuotaAndRetriesThroughSuccessEvent() {
+        OfferPlan plan = claimPlan(1);
+        OfferStockGateway failing = mock(OfferStockGateway.class, AdditionalAnswers.delegatesTo(stockGateway));
+        doThrow(new IllegalStateException("模拟 Redis 删除超时")).when(failing).releaseHold(anyLong());
+        IssuedVoucher voucher = worker(failing, transactions).claim(711, plan.getId(), IssuerScope.MERCHANT, "cleanup");
+        ClaimTicket row = claimService.findRequestByUserCouponId(voucher.getId());
+        assertEquals(1, stockGateway.readHold(row.getId()));
+        assertEquals(voucher.getId(), claimService.claim(711, plan.getId(), IssuerScope.MERCHANT, "cleanup").getId());
+        assertTrue(stockGateway.tryAcquire(plan.getId(), 711, 1, 2, 60, -711).quotaExceeded());
+        assertEquals(1, templateMapper.selectById(plan.getId()).getInventoryQty());
+        outboxPublisher.publishCycle();
+        assertNull(stockGateway.readHold(row.getId()));
+    }
 
     @AfterEach
     void clear() {
@@ -251,7 +345,9 @@ class PhaseBFlowTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         EasyExcel.write(output, BatchUserRow.class).autoCloseStream(false).sheet().doWrite(List.of(row("701"), row("bad"), row("701")));
         GrantBatch task = taskService.create(template.getId(), output.toByteArray(), "users.xlsx");
+        assertArrayEquals(output.toByteArray(), taskMapper.loadInput(task.getId()).contents());
         assertEquals(1, taskService.scanDue());
+        assertNull(taskMapper.loadInput(task.getId()));
         GrantBatch done = taskMapper.selectById(task.getId());
         assertEquals(1, done.getSuccessCount());
         assertEquals(2, done.getFailCount());

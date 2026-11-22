@@ -40,8 +40,34 @@ activate() { # $1 = 发布目录（含 app.jar 和 dist/）
   restart_app
 }
 
+rollback_compatible() {
+  # 从旧发布包读取迁移清单。表或列已改名时，直接换回旧 jar 会让业务查询失败。
+  local versions required version
+  versions=$(python3 - "$PREV/app.jar" <<'PYJAR'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as jar:
+    for name in jar.namelist():
+        if name.startswith("BOOT-INF/classes/db/V"):
+            print(name.rsplit("/", 1)[-1])
+PYJAR
+  ) || return 1
+  required=$(mysqlq -N -e "SELECT version FROM deploy_schema_history WHERE version REGEXP '^V01[234]__'") || return 1
+  while IFS= read -r version; do
+    if [ -n "$version" ] && ! grep -qxF "$version" <<<"$versions"; then
+      echo "数据库已应用 $version，上一版不兼容。请保持维护状态并按备份恢复流程操作。" >&2
+      return 1
+    fi
+  done <<<"$required"
+  if ! grep -q '^V016__' <<<"$versions" && [ -f db/V016__grant_batch_input.sql ]; then
+    local queued
+    queued=$(mysqlq -N -e "SELECT COUNT(*) FROM grant_batch WHERE input_file IS NOT NULL") || return 1
+    [ "$queued" = 0 ] || { echo "仍有依赖数据库输入文件的发券任务，请先完成任务再回滚。" >&2; return 1; }
+  fi
+}
+
 if [ "$MODE" = rollback ]; then
   test -s "$PREV/app.jar" || { echo "没有可回滚的上一版本"; exit 1; }
+  rollback_compatible || exit 1
   echo "回滚到上一版本: $(cat "$PREV/sha" 2>/dev/null || echo unknown)"
   activate "$PREV"
   wait_healthy || { echo "回滚后应用仍不健康"; docker compose logs --tail 80 app; exit 1; }
@@ -51,13 +77,6 @@ if [ "$MODE" = rollback ]; then
 fi
 
 test -s "$IN/app.jar" && test -f "$IN/dist/index.html" || { echo "发布包不完整"; exit 1; }
-
-# 1. 保存当前版本，供回滚
-rm -rf "$PREV.tmp"; mkdir -p "$PREV.tmp"
-cp -a app/app.jar "$PREV.tmp/app.jar"
-cp -a dist "$PREV.tmp/dist"
-cat .deployed-sha > "$PREV.tmp/sha" 2>/dev/null || echo manual-initial > "$PREV.tmp/sha"
-rm -rf "$PREV"; mv "$PREV.tmp" "$PREV"
 
 # 2. 数据库迁移：记录在 deploy_schema_history；首次运行时把服务器初始化时已执行的脚本记为基线
 mysqlq -e "CREATE TABLE IF NOT EXISTS deploy_schema_history (version VARCHAR(128) NOT NULL PRIMARY KEY, applied_at DATETIME NOT NULL, release_sha VARCHAR(64) NULL)"
@@ -71,6 +90,25 @@ pending=()
 for f in $(ls "$IN"/db/V*.sql | sort); do
   grep -qxF "$(basename "$f")" <<<"$applied" || pending+=("$f")
 done
+# V012–V014 会改变旧程序依赖的表、列或状态编码。先停止写入，再备份和迁移。
+for migration in "${pending[@]}"; do
+  case "$(basename "$migration")" in
+    V012__*|V013__*|V014__*)
+      running=$(docker compose ps --status running -q app)
+      if [ -n "$running" ]; then
+        echo "跨版本迁移需要维护窗口。暂停入口和 app 后重新执行发布，以获得可恢复的备份。" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+# 1. 保存当前版本，供回滚
+rm -rf "$PREV.tmp"; mkdir -p "$PREV.tmp"
+cp -a app/app.jar "$PREV.tmp/app.jar"
+cp -a dist "$PREV.tmp/dist"
+cat .deployed-sha > "$PREV.tmp/sha" 2>/dev/null || echo manual-initial > "$PREV.tmp/sha"
+rm -rf "$PREV"; mv "$PREV.tmp" "$PREV"
+
 if [ ${#pending[@]} -gt 0 ]; then
   mkdir -p backups && chmod 700 backups
   bk="backups/pre-deploy-$(date +%Y%m%d-%H%M%S)-${SHA:0:7}.sql"
@@ -105,7 +143,8 @@ fi
 activate "$IN"
 if ! wait_healthy; then
   echo "新版本健康检查失败，自动回滚"; docker compose logs --tail 120 app || true
-  activate "$PREV"; wait_healthy || true
+  rollback_compatible || exit 1
+  activate "$PREV"; wait_healthy || { echo "旧版本未恢复健康"; exit 1; }
   exit 1
 fi
 docker compose exec -T nginx nginx -s reload

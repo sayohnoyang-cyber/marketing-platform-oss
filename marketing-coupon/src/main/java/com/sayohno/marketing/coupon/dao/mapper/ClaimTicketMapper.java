@@ -35,7 +35,7 @@ public interface ClaimTicketMapper extends BaseMapper<ClaimTicket> {
 
     @Update("""
             UPDATE claim_ticket
-            SET status = 'failed', redis_applied = 0, reservation_token = NULL, lease_until = NULL, update_time = #{now}
+            SET status = 'failed', redis_applied = 1, reservation_token = NULL, lease_until = NULL, update_time = #{now}
             WHERE id = #{id} AND reservation_token = #{token} AND status IN ('pending', 'reserved')
             """)
     int markFailed(@Param("id") long id, @Param("token") String token, @Param("now") LocalDateTime now);

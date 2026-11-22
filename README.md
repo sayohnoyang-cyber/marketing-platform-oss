@@ -49,15 +49,13 @@ cp .env.example .env
 
 ```bash
 docker compose up -d
-
-# 按文件名顺序执行全部迁移（当前为 V001 至 V015）
-set -a && . ./.env && set +a
-mysql -h 127.0.0.1 -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" \
-  -e "CREATE DATABASE IF NOT EXISTS marketing DEFAULT CHARACTER SET utf8mb4"
-for migration in marketing-app/src/main/resources/db/V*.sql; do
-  mysql -h 127.0.0.1 -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" marketing < "$migration" || break
-done
 ```
+
+首次使用空数据卷时，MySQL 容器会自动按文件名执行 Compose 挂载的初始化脚本。已有数据卷升级时，请先备份，再按版本顺序执行尚未应用的迁移。重复执行历史脚本会导致表结构冲突。
+
+从 V012 之前的版本升级，或仍需执行 V013、V014 时，请先暂停入口流量和所有写入实例，停止生产 Compose 的 `app`，再运行发布脚本。脚本会在迁移前保存 MySQL 备份。验证新版本的健康接口和领券流程后再开放流量。跨这些版本回退时，应在维护窗口内把迁移前备份恢复到独立数据库，核对迁移记录与发券库存，并将应用和 Redis 切回与备份匹配的版本。若新版本已接收写入，还需先对账并保留这些变更。
+
+V016 起，默认把批量发券文件与任务一同写入 MySQL，任务完成后释放文件内容。已配置 `OFFER_GRANT_BATCH_DIR` 的部署继续使用该目录，多实例需挂载相同的共享路径。升级前已排队的文件任务仍需保留原路径。
 
 ### 3. 启动后端
 

@@ -20,7 +20,9 @@ import com.sayohno.marketing.identity.dao.entity.IamUser;
 import com.sayohno.marketing.identity.dao.mapper.IamUserMapper;
 import com.sayohno.marketing.identity.service.MerchantAccessService;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -30,6 +32,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
+@Slf4j
 @Service
 public class GrantBatchService {
     private final GrantBatchMapper taskMapper;
@@ -59,10 +62,12 @@ public class GrantBatchService {
         this.properties = properties;
     }
 
+    @Transactional
     public GrantBatch create(long templateId, byte[] file, String originalName) {
         return create(templateId, file, originalName, null);
     }
 
+    @Transactional
     public GrantBatch create(long templateId, byte[] file, String originalName, LocalDateTime runAt) {
         var merchant = merchantAccessService.requireMerchant();
         OfferPlan template = templateService.requireOwned(templateId);
@@ -71,17 +76,23 @@ public class GrantBatchService {
         }
         List<BatchUserRow> rows = read(file);
         String batchCode = UUID.randomUUID().toString().replace("-", "");
-        Path path = taskDir().resolve(batchCode + "-" + safeName(originalName));
-        try {
-            Files.write(path, file);
-        } catch (Exception exception) {
-            throw new BizException(ErrorCode.SYSTEM, "发券文件保存失败");
+        // 默认随任务一起持久化；显式配置共享目录的部署继续沿用文件存储。
+        boolean storeInDatabase = properties.getOffer().getGrantBatchDir().isBlank();
+        String filePath = "db:" + batchCode;
+        if (!storeInDatabase) {
+            Path path = taskDir().resolve(batchCode + "-" + safeName(originalName));
+            try {
+                Files.write(path, file);
+                filePath = path.toString();
+            } catch (Exception exception) {
+                throw new BizException(ErrorCode.SYSTEM, "发券文件保存失败");
+            }
         }
         GrantBatch task = new GrantBatch();
         task.setMerchantId(merchant.getMerchantId());
         task.setPlanId(template.getId());
         task.setBatchCode(batchCode);
-        task.setFilePath(path.toString());
+        task.setFilePath(filePath);
         task.setRunAt(runAt == null ? LocalDateTime.now() : runAt);
         task.setStatus(GrantBatchStatus.QUEUED);
         task.setProgress(0);
@@ -89,6 +100,9 @@ public class GrantBatchService {
         task.setSuccessCount(0);
         task.setFailCount(0);
         taskMapper.insert(task);
+        if (storeInDatabase) {
+            taskMapper.saveInput(task.getId(), file);
+        }
         return task;
     }
 
@@ -146,10 +160,17 @@ public class GrantBatchService {
         if (task == null || !token.equals(task.getOwnerToken())) {
             return;
         }
+        // 数据库暂时不可用时让租约到期后重试，历史任务仍按原路径读取。
+        boolean databaseInput = task.getFilePath().startsWith("db:");
+        GrantBatchMapper.BatchInput input = databaseInput ? taskMapper.loadInput(taskId) : null;
         List<BatchUserRow> rows;
         try {
-            rows = read(Files.readAllBytes(Path.of(task.getFilePath())));
+            if (databaseInput && input == null) {
+                throw new IllegalStateException("发券文件内容缺失");
+            }
+            rows = read(databaseInput ? input.contents() : Files.readAllBytes(Path.of(task.getFilePath())));
         } catch (Exception exception) {
+            log.warn("发券任务 {} 的输入文件无法读取", taskId, exception);
             finish(task, token, GrantBatchStatus.FAILED);
             return;
         }
@@ -261,10 +282,7 @@ public class GrantBatchService {
     }
 
     private Path taskDir() {
-        String configured = properties.getOffer().getGrantBatchDir();
-        Path path = (configured == null || configured.isBlank())
-                ? Path.of(System.getProperty("java.io.tmpdir"), "marketing-grant-batches")
-                : Path.of(configured);
+        Path path = Path.of(properties.getOffer().getGrantBatchDir());
         try {
             Files.createDirectories(path);
         } catch (Exception exception) {
