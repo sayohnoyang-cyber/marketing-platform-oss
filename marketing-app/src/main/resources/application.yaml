@@ -54,10 +54,11 @@ marketing:
       - http://localhost:5174
     console-base-url: ${CONSOLE_BASE_URL:http://127.0.0.1:5173}
   shortlink:
-    bloom-expected-insertions: ${SHORTLINK_BLOOM_EXPECTED:100000000}
+    bloom-expected-insertions: ${SHORTLINK_BLOOM_EXPECTED:1000000}
     bloom-false-probability: ${SHORTLINK_BLOOM_FPP:0.001}
     public-base-url: ${SHORTLINK_PUBLIC_BASE_URL:http://127.0.0.1:9100}
     trust-forwarded: ${SHORTLINK_TRUST_FORWARDED:false}
+    async-visit-record: ${SHORTLINK_ASYNC_VISIT_RECORD:true}
   outbox:
     publish-enabled: ${OUTBOX_PUBLISH_ENABLED:true}
     max-retries: ${OUTBOX_MAX_RETRIES:8}

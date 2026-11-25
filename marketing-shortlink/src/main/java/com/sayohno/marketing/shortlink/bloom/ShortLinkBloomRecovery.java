@@ -40,10 +40,28 @@ public class ShortLinkBloomRecovery implements ApplicationRunner {
             MarketingProperties.Shortlink shortlink = properties.getShortlink();
             bloom.tryInit(shortlink.getBloomExpectedInsertions(), shortlink.getBloomFalseProbability());
         }
-        List<Link> links = linkMapper.selectList(Wrappers.<Link>lambdaQuery().select(Link::getFullShortUrl));
-        for (Link link : links) {
-            if (link.getFullShortUrl() != null && !link.getFullShortUrl().isBlank()) {
-                bloom.add(link.getFullShortUrl());
+        // 按主键游标分页仅恢复未删除的有效短链，防止一次性全表拉取造成启动内存峰值或 OOM。
+        long lastId = 0L;
+        while (true) {
+            List<Link> batch = linkMapper.selectList(Wrappers.<Link>lambdaQuery()
+                    .select(Link::getId, Link::getFullShortUrl)
+                    .eq(Link::getDelTime, 0L)
+                    .gt(Link::getId, lastId)
+                    .orderByAsc(Link::getId)
+                    .last("LIMIT 1000"));
+            if (batch.isEmpty()) {
+                break;
+            }
+            for (Link link : batch) {
+                if (link.getFullShortUrl() != null && !link.getFullShortUrl().isBlank()) {
+                    bloom.add(link.getFullShortUrl());
+                }
+                if (link.getId() != null && link.getId() > lastId) {
+                    lastId = link.getId();
+                }
+            }
+            if (batch.size() < 1000) {
+                break;
             }
         }
         redis.opsForValue().set(ShortLinkRedisKeys.BLOOM_READY, "ready");

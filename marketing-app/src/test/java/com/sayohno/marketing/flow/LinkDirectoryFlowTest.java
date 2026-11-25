@@ -92,8 +92,15 @@ class LinkDirectoryFlowTest {
         assertEquals(4L, summary.get("enabled"));
         assertEquals(2L, summary.get("visits")); // 同一访客跨两条短链分别计数，渠道不重复加入主链汇总。
         var rows = records(initial);
-        assertEquals(1L, rows.stream().filter(r -> r.getEntryKey().equals("m-" + activity.getId())).findFirst().orElseThrow().getVisits());
-        assertEquals(1L, rows.stream().filter(r -> channel.getId().equals(r.getChannelId())).findFirst().orElseThrow().getVisits());
+        var mainRow = rows.stream().filter(r -> r.getEntryKey().equals("m-" + activity.getId())).findFirst().orElseThrow();
+        var channelRow = rows.stream().filter(r -> channel.getId().equals(r.getChannelId())).findFirst().orElseThrow();
+        var plainRow = rows.stream().filter(r -> plain.getId().equals(r.getLinkId())).findFirst().orElseThrow();
+        assertEquals(1L, mainRow.getClicks());
+        assertEquals(1L, mainRow.getVisits());
+        assertEquals(0L, channelRow.getClicks());
+        assertEquals(1L, channelRow.getVisits());
+        assertEquals(1L, plainRow.getClicks());
+        assertEquals(1L, plainRow.getVisits());
         assertEquals("已过期", rows.stream().filter(r -> expired.getId().equals(r.getLinkId())).findFirst().orElseThrow().getPage());
         assertEquals(1L, lists.page(1, 20, "100%_", null, false, "ALL").get("total"));
         assertEquals(2L, lists.page(1, 20, null, null, true, "ALL").get("total"));

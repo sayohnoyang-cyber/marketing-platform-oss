@@ -44,18 +44,29 @@ public class CampaignLinkListService {
         long total = lists.count(query);
         long safePage = Math.min(Math.max(1, page), Math.max(1, (total + safeSize - 1) / safeSize));
         var rows = lists.page(query, (safePage - 1) * safeSize, safeSize);
-        // 仅批量读取当前页的到达和跳转统计；SQL条数不随活动或渠道数量增长。
+        // 仅批量读取当前页的落地页到达和短链点击统计；SQL 条数固定，不随活动或渠道数量增长。
         var activityIds = rows.stream().filter(row -> !"PLAIN".equals(row.getKind())).map(row -> row.getActivityId()).distinct().toList();
-        var linkIds = rows.stream().filter(row -> "PLAIN".equals(row.getKind())).map(row -> row.getLinkId()).distinct().toList();
+        var allLinkIds = rows.stream().map(row -> row.getLinkId()).filter(java.util.Objects::nonNull).distinct().toList();
         Map<String, Long> arrivals = new HashMap<>();
         if (!activityIds.isEmpty()) for (var row : lists.entryVisits(merchantId, activityIds)) {
             arrivals.put(row.get("activity_id") + ":" + row.get("channel_id"), count(row, "visits"));
         }
-        Map<String, Long> jumps = new HashMap<>();
-        if (!linkIds.isEmpty()) for (var row : lists.plainVisits(merchantId, linkIds)) jumps.put(row.get("id").toString(), count(row, "visits"));
+        Map<String, Long> clicks = new HashMap<>();
+        if (!allLinkIds.isEmpty()) for (var row : lists.linkClicks(merchantId, allLinkIds)) {
+            String ch = row.get("channel_code") == null ? "" : String.valueOf(row.get("channel_code"));
+            clicks.put(row.get("id") + ":" + ch, count(row, "clicks"));
+        }
         for (var row : rows) {
-            row.setVisits("PLAIN".equals(row.getKind()) ? jumps.getOrDefault(String.valueOf(row.getLinkId()), 0L)
-                    : arrivals.getOrDefault(row.getActivityId() + ":" + row.getChannelId(), 0L));
+            if ("PLAIN".equals(row.getKind())) {
+                long c = row.getLinkId() == null ? 0L : clicks.getOrDefault(row.getLinkId() + ":", 0L);
+                row.setClicks(c);
+                row.setVisits(c);
+            } else {
+                String channelKey = "MAIN".equals(row.getKind()) ? "" : (row.getSource() == null ? "" : row.getSource());
+                long c = row.getLinkId() == null ? 0L : clicks.getOrDefault(row.getLinkId() + ":" + channelKey, 0L);
+                row.setClicks(c);
+                row.setVisits(arrivals.getOrDefault(row.getActivityId() + ":" + row.getChannelId(), 0L));
+            }
             if ("PLAIN".equals(row.getKind())) {
                 row.setPage(!Boolean.TRUE.equals(row.getOnFlag()) ? "已停用"
                         : row.getValidDate() != null && !now.isBefore(row.getValidDate()) ? "已过期" : "已启用");
@@ -78,7 +89,7 @@ public class CampaignLinkListService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("records", rows); result.put("total", total); result.put("page", safePage); result.put("size", safeSize);
         result.put("summary", Map.of("total", count(totals, "total"), "enabled", count(totals, "enabled"), "visits", visits, "segments", segments));
-        result.put("definition", "顶部为整个工作空间的短链跳转访客，各短链独立去重后相加；列表主链及渠道为落地页到达访客，普通短链为跳转访客。统计可能异步延迟。");
+        result.put("definition", "顶部为全部短链点击访客（每条短链独立去重后相加）；活动入口列表同时区分短链点击（302跳转去重）与落地页到达（有效访问去重），普通短链仅统计跳转点击。统计可能存在异步延迟。");
         return result;
     }
 

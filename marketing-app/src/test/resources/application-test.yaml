@@ -19,5 +19,7 @@ marketing:
     enabled: false
   outbox:
     publish-enabled: false
+  shortlink:
+    async-visit-record: false
   offer:
     grant-batch-scan-enabled: false

@@ -72,6 +72,24 @@
       AND v.activity_id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
     GROUP BY v.activity_id, v.channel_id
   </select>
+  <!-- 批量按短链统计去重点击访客：活动主链按渠道码细分，普通短链按全短链去重，避免跨查询累加 SQL 次数。 -->
+  <select id="linkClicks" resultType="map">
+    SELECT s.id, s.channel_code, COUNT(DISTINCT s.visitor_id) clicks
+    FROM (
+      SELECT l.id,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM campaign_activity m WHERE m.main_link_id = l.id AND m.merchant_id = l.merchant_id)
+          THEN COALESCE(logs.channel_code, '')
+          ELSE ''
+        END AS channel_code,
+        logs.visitor_id
+      FROM link l
+      LEFT JOIN link_access_log logs ON logs.link_id = l.id AND logs.visitor_id IS NOT NULL AND logs.visitor_id != '' AND logs.visitor_id != 'anonymous'
+      WHERE l.merchant_id = #{merchantId} AND l.del_time = 0 AND l.del_flag = 0
+        AND l.id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    ) s
+    GROUP BY s.id, s.channel_code
+  </select>
   <select id="plainVisits" resultType="map">
     SELECT l.id, COUNT(DISTINCT logs.visitor_id) visits FROM link l
     LEFT JOIN link_access_log logs ON logs.link_id = l.id AND logs.visitor_id != 'anonymous'

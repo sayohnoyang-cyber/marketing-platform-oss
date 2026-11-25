@@ -103,6 +103,8 @@ class PhaseBFlowTest {
     private ConsumerInboxMapper inboxMapper;
     @Autowired
     private IamUserMapper iamUserMapper;
+    @Autowired
+    private com.sayohno.marketing.common.config.MarketingProperties properties;
 
     @AfterEach
     void clear() {
@@ -233,6 +235,33 @@ class PhaseBFlowTest {
         assertThrows(BizException.class, () -> redirectService.resolve(link.getShortUri(), "visitor-1"));
         asMerchant(second);
         assertThrows(BizException.class, () -> linkDirectoryService.listLinks(group.getGid(), false));
+    }
+
+    @Test
+    void asyncShortLinkVisitEnqueuesWithoutImmediateDbWriteAndFlushesToOutbox() {
+        Shop first = shop();
+        asMerchant(first);
+        var group = linkDirectoryService.createGroup("异步统计");
+        Link link = linkDirectoryService.createLink(group.getGid(), "https://example.com/async", null, "async-visit-1", null, null);
+        properties.getShortlink().setAsyncVisitRecord(true);
+        try {
+            redirectService.resolve(link.getShortUri(), "async-visitor-1", true, "wx");
+            // 异步模式下尚未刷盘时 Outbox 中还没有事件
+            assertEquals(0L, outboxEventMapper.selectCount(Wrappers.<OutboxEvent>lambdaQuery()
+                    .eq(OutboxEvent::getEventType, RedirectService.VISIT_EVENT)
+                    .eq(OutboxEvent::getAggregateId, String.valueOf(link.getId()))));
+            assertEquals(1, redirectService.flushPendingVisits());
+            OutboxEvent flushed = outboxEventMapper.selectOne(Wrappers.<OutboxEvent>lambdaQuery()
+                    .eq(OutboxEvent::getEventType, RedirectService.VISIT_EVENT)
+                    .eq(OutboxEvent::getAggregateId, String.valueOf(link.getId())));
+            org.junit.jupiter.api.Assertions.assertNotNull(flushed);
+            visitStatsHandler.handle(flushed);
+            LinkStatsDaily stats = statsMapper.selectOne(Wrappers.<LinkStatsDaily>lambdaQuery().eq(LinkStatsDaily::getLinkId, link.getId()));
+            assertEquals(1L, stats.getPv());
+            assertEquals(1L, stats.getUv());
+        } finally {
+            properties.getShortlink().setAsyncVisitRecord(false);
+        }
     }
 
     @Test

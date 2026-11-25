@@ -11,6 +11,7 @@ import com.sayohno.marketing.shortlink.bloom.BloomReadPolicy;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.dao.mapper.LinkMapper;
 import com.sayohno.marketing.shortlink.redis.ShortLinkRedisKeys;
+import jakarta.annotation.PreDestroy;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
@@ -23,13 +24,24 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class RedirectService {
     public static final String VISIT_EVENT = "shortlink.visit";
     private static final Logger log = LoggerFactory.getLogger(RedirectService.class);
     private static final String MISS = "__miss__";
+    private static final int VISIT_QUEUE_CAPACITY = 10_000;
+    private static final int VISIT_BATCH_SIZE = 200;
+    private static final int VISIT_FLUSH_LIMIT = 2_000;
     private final LinkMapper linkMapper;
     private final MarketingProperties properties;
     private final BloomReadPolicy bloomReadPolicy;
@@ -38,6 +50,10 @@ public class RedirectService {
     private final OutboxStore outboxStore;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    /** 有界内存缓冲队列：302 跳转热路径仅入队，后台单线程定期批量落库 Outbox，避免高并发跳转阻塞 MySQL。 */
+    private final BlockingQueue<PendingVisit> visitQueue = new ArrayBlockingQueue<>(VISIT_QUEUE_CAPACITY);
+    private final AtomicLong droppedVisits = new AtomicLong();
+    private final ScheduledExecutorService visitFlushExecutor;
 
     public RedirectService(LinkMapper linkMapper,
                            MarketingProperties properties,
@@ -55,6 +71,16 @@ public class RedirectService {
         this.outboxStore = outboxStore;
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        if (properties.getShortlink().isAsyncVisitRecord()) {
+            this.visitFlushExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "shortlink-visit-flush");
+                thread.setDaemon(true);
+                return thread;
+            });
+            this.visitFlushExecutor.scheduleWithFixedDelay(this::flushSafely, 200, 200, TimeUnit.MILLISECONDS);
+        } else {
+            this.visitFlushExecutor = null;
+        }
     }
 
     public Link resolve(String shortUri, String visitorId) {
@@ -238,11 +264,69 @@ public class RedirectService {
             payload.put("channelCode", channelCode);
         }
         payload.put("occurredAt", LocalDateTime.now().toString());
+        if (properties.getShortlink().isAsyncVisitRecord()) {
+            // 异步模式：仅非阻塞入队，队列满时丢弃统计并限频告警，绝不阻塞 302 重定向。
+            if (!visitQueue.offer(new PendingVisit(eventId, String.valueOf(link.getId()), payload.toString()))) {
+                long dropped = droppedVisits.incrementAndGet();
+                if (dropped == 1 || dropped % 1000 == 0) {
+                    log.warn("短链访问统计缓冲队列已满，累计丢弃条数={}", dropped);
+                }
+            }
+            return;
+        }
         try {
             transactionTemplate.executeWithoutResult(status -> outboxStore.append(eventId, VISIT_EVENT,
                     String.valueOf(link.getId()), payload.toString()));
         } catch (RuntimeException exception) {
             log.error("短链统计事件未写入，跳转继续。linkId={}", link.getId(), exception);
         }
+    }
+
+    /** 批量将缓冲队列中的访问事件写入本地 Outbox 表，供后台定时刷盘及测试显式触发。 */
+    public int flushPendingVisits() {
+        int totalFlushed = 0;
+        while (totalFlushed < VISIT_FLUSH_LIMIT && !visitQueue.isEmpty()) {
+            List<PendingVisit> batch = new ArrayList<>(VISIT_BATCH_SIZE);
+            visitQueue.drainTo(batch, Math.min(VISIT_BATCH_SIZE, VISIT_FLUSH_LIMIT - totalFlushed));
+            if (batch.isEmpty()) {
+                break;
+            }
+            try {
+                transactionTemplate.executeWithoutResult(status -> {
+                    for (PendingVisit item : batch) {
+                        outboxStore.append(item.eventId(), VISIT_EVENT, item.aggregateId(), item.payload());
+                    }
+                });
+                totalFlushed += batch.size();
+            } catch (RuntimeException exception) {
+                log.error("批量刷写短链访问统计失败，本批条数={}", batch.size(), exception);
+                break;
+            }
+        }
+        return totalFlushed;
+    }
+
+    private void flushSafely() {
+        try {
+            flushPendingVisits();
+        } catch (RuntimeException exception) {
+            log.error("短链访问统计后台刷盘异常", exception);
+        }
+    }
+
+    @PreDestroy
+    public void shutdownVisitQueue() {
+        if (visitFlushExecutor != null) {
+            visitFlushExecutor.shutdown();
+            try {
+                visitFlushExecutor.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        flushSafely();
+    }
+
+    private record PendingVisit(String eventId, String aggregateId, String payload) {
     }
 }

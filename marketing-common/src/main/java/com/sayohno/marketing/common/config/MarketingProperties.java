@@ -69,10 +69,13 @@ public class MarketingProperties {
 
     @Data
     public static class Shortlink {
-        private long bloomExpectedInsertions = 100_000_000L;
+        /** 布隆过滤器默认预期容量（100 万，兼顾常见中小规模部署的 Redis 内存占用）。 */
+        private long bloomExpectedInsertions = 1_000_000L;
         private double bloomFalseProbability = 0.001D;
         private String publicBaseUrl = "http://127.0.0.1:9100";
         private boolean trustForwarded = false;
+        /** 302 跳转是否异步入队批量写入访问统计，避免高并发跳转热路径同步阻塞写库。 */
+        private boolean asyncVisitRecord = true;
     }
 
     @Data

@@ -14,6 +14,8 @@ public interface CampaignLinkListMapper {
     Map<String, Object> totals(@Param("q") Map<String, Object> query);
     List<Map<String, Object>> jumpSegments(@Param("merchantId") long merchantId);
     List<Map<String, Object>> entryVisits(@Param("merchantId") long merchantId, @Param("ids") List<Long> activityIds);
+    /** 批量按短链及渠道统计 302 跳转去重点击访客数。 */
+    List<Map<String, Object>> linkClicks(@Param("merchantId") long merchantId, @Param("ids") List<Long> linkIds);
     List<Map<String, Object>> plainVisits(@Param("merchantId") long merchantId, @Param("ids") List<Long> linkIds);
     List<Map<String, Object>> options(@Param("merchantId") long merchantId, @Param("word") String word, @Param("offset") long offset, @Param("size") long size);
     com.sayohno.marketing.campaign.web.dto.ActivitySpotlight spotlight(@Param("merchantId") long merchantId, @Param("now") LocalDateTime now);
