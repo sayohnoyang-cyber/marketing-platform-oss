@@ -35,4 +35,13 @@ public interface CampaignConversionMapper extends BaseMapper<CampaignConversion>
     java.util.List<ActivityCountRow> countByTypeBatch(
             @org.apache.ibatis.annotations.Param("activityIds") java.util.List<Long> activityIds,
             @org.apache.ibatis.annotations.Param("eventType") String eventType);
+
+    /** 统计本场活动中当前仍处于已核销状态（未退款）的去重券数，作为核销率分子以避免退款重核导致超过 100%。 */
+    @org.apache.ibatis.annotations.Select("""
+            SELECT COUNT(DISTINCT c.voucher_id)
+            FROM campaign_conversion c
+            JOIN issued_voucher v ON v.id = c.voucher_id
+            WHERE c.activity_id = #{activityId} AND c.event_type = 'REDEEM' AND v.status = 'redeemed'
+            """)
+    long countNetRedeemedVouchers(@org.apache.ibatis.annotations.Param("activityId") long activityId);
 }

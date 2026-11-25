@@ -4,12 +4,16 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.sayohno.marketing.coupon.dao.entity.OfferInventory;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
 
 @Mapper
 public interface OfferInventoryMapper extends BaseMapper<OfferInventory> {
+    /** 冻结或对账前对投放行加排他锁，防止与并发领券产生 claimed_count 读偏导致库存超退。 */
+    @Select("SELECT * FROM offer_inventory WHERE id = #{id} FOR UPDATE")
+    OfferInventory lockById(@Param("id") long id);
     @Update("""
             UPDATE offer_inventory
             SET quantity = quantity + #{delta}, update_time = #{now}

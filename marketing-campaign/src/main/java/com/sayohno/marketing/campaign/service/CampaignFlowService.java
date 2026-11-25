@@ -811,7 +811,7 @@ public class CampaignFlowService {
 
     public Map<String, Object> review(long activityId) {
         Map<String, Object> body = board(activityId, "review");
-        body.put("redeemRateNote", "核销率的分子是核销笔数，分母是本场已领取张数。退款不恢复本场可领库存。");
+        body.put("redeemRateNote", "核销率的分子是当前已核销（未退款）的去重券数，分母是本场已领取张数；退款后再次核销不会重复计入核销率。");
         return body;
     }
 
@@ -871,6 +871,7 @@ public class CampaignFlowService {
         long visits = visitMapper.uniqueActivityVisitors(activityId);
         long reservations = activeReservations(activityId);
         long redeems = countActivity(activityId, "REDEEM");
+        long netRedeemed = conversionMapper.countNetRedeemedVouchers(activityId);
         long refunds = countActivity(activityId, "REFUND");
         body.put("clicks", clicks);
         body.put("visits", visits);
@@ -880,14 +881,17 @@ public class CampaignFlowService {
                 "reservations", reservations,
                 "claims", attributed,
                 "redeems", redeems,
+                "netRedeemed", netRedeemed,
                 "refunds", refunds));
         body.put("visitDefinition", "短链点击为 302 跳转去重访客，落地页到达为有效入口去重访客；直接打开落地页不经过短链时，到达可能大于点击。各渠道独立去重，不直接相加作为活动总数。");
         if (claimed instanceof Number number && number.longValue() > 0) {
-            body.put("redeemRate", BigDecimal.valueOf(redeems).divide(BigDecimal.valueOf(number.longValue()), 4, java.math.RoundingMode.HALF_UP));
+            // 核销率分子采用当前仍处于已核销状态的去重券数，确保退款后重核不超过 100%。
+            long validRedeemed = Math.min(netRedeemed, number.longValue());
+            body.put("redeemRate", BigDecimal.valueOf(validRedeemed).divide(BigDecimal.valueOf(number.longValue()), 4, java.math.RoundingMode.HALF_UP));
         } else {
             body.put("redeemRate", null);
         }
-        body.put("redeemRateNote", "分子是核销笔数，分母是本场已领取张数，截止时间为 generatedAt。");
+        body.put("redeemRateNote", "分子是当前已核销（未退款）的去重券数，分母是本场已领取张数，截止时间为 generatedAt。");
         return body;
     }
 

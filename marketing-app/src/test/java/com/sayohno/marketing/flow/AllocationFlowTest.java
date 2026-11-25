@@ -212,6 +212,26 @@ class AllocationFlowTest {
         assertThrows(BizException.class, () -> flowService.claimAsync(9003L, activity.getId(), template.getId(), "if-r3", cred3));
     }
 
+    @Test
+    void adjustIdempotencyRetryDoesNotRevertLaterQuantityAndFreezeReturnsUnclaimed() {
+        Shop shop = shop();
+        asMerchant(shop);
+        OfferPlan template = template(shop, 100, 2);
+        var allocation = allocationService.allocate(template.getId(), 20, 1, "adj-init");
+        // 第一次调量到 30，第二次追加到 50；随后重放第一次幂等键不应将库存减回 30
+        allocationService.adjust(allocation.getId(), 30, 1, "adj-k1", true, true);
+        allocationService.adjust(allocation.getId(), 50, 1, "adj-k2", true, true);
+        var replayed = allocationService.adjust(allocation.getId(), 30, 1, "adj-k1", true, true);
+        assertEquals(50, replayed.getQuantity());
+        assertEquals(50, templateService.requireOwned(template.getId()).getInventoryQty());
+
+        // 冻结后未领 50 张精确退回模板，总库存保持守恒
+        var frozen = allocationService.freeze(allocation.getId());
+        assertEquals(InventoryStatus.FROZEN, frozen.getStatus());
+        assertEquals(0, frozen.getQuantity());
+        assertEquals(100, templateService.requireOwned(template.getId()).getInventoryQty());
+    }
+
     private void placeRace(Shop shop, long activityId, String key, CountDownLatch latch, AtomicInteger wins) {
         try {
             latch.await();

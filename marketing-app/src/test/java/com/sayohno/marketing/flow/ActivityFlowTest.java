@@ -42,6 +42,7 @@ import com.sayohno.marketing.coupon.dao.entity.ClaimTicket;
 import com.sayohno.marketing.coupon.dao.mapper.ClaimTicketMapper;
 import com.sayohno.marketing.coupon.dao.mapper.OfferPlanMapper;
 import com.sayohno.marketing.coupon.service.VoucherClaimService;
+import com.sayohno.marketing.coupon.service.VoucherRedemptionService;
 import com.sayohno.marketing.coupon.stock.OfferStockGateway;
 
 import java.math.BigDecimal;
@@ -86,6 +87,8 @@ class ActivityFlowTest {
     private CampaignActivityMapper activityMapper;
     @Autowired
     private VoucherClaimService claimService;
+    @Autowired
+    private VoucherRedemptionService redemptionService;
     @Autowired
     private PlatformTransactionManager transactionManager;
     @Autowired
@@ -644,6 +647,35 @@ class ActivityFlowTest {
         Map<String, Object> stillOpen = flowService.visit(activity.getId(), null, "direct-visitor-2");
         assertEquals("CLAIM", stillOpen.get("action"));
         flowService.claim(902L, activity.getId(), template.getId(), "direct-claim-2", String.valueOf(stillOpen.get("credential")));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void reviewRedeemRateStaysBoundedWhenVoucherIsRefundedAndReRedeemed() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "重核销券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"5.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("核销率口径活动", now.minusHours(2), now.minusMinutes(5), now.plusDays(1));
+        flowService.saveOffer(activity.getId(), template.getId(), 4, 1, "rate-offer", new BigDecimal("20.00"), null);
+        campaignService.publish(activity.getId());
+
+        Map<String, Object> visit = flowService.visit(activity.getId(), null, "rate-visitor-1");
+        var voucher = flowService.claim(950L, activity.getId(), template.getId(), "rate-claim-1", String.valueOf(visit.get("credential")));
+
+        // 核销 -> 整单退款 -> 再次核销，产生 2 条 REDEEM 转化记录，但同一张券净核销率应为 1.0000（不超过 100%）
+        redemptionService.redeemDirect(950L, voucher.getId(), "ORD-1", new BigDecimal("50.00"), null);
+        redemptionService.refund(950L, voucher.getId(), "ORD-1", new BigDecimal("45.00"));
+        redemptionService.redeemDirect(950L, voucher.getId(), "ORD-2", new BigDecimal("60.00"), null);
+        outboxPublisher.publishCycle();
+
+        Map<String, Object> review = flowService.review(activity.getId());
+        assertEquals(0, new BigDecimal("1.0000").compareTo((BigDecimal) review.get("redeemRate")));
+        Map<String, Object> funnel = (Map<String, Object>) review.get("funnel");
+        assertEquals(2L, ((Number) funnel.get("redeems")).longValue());
+        assertEquals(1L, ((Number) funnel.get("netRedeemed")).longValue());
     }
 
     private Shop shop() {

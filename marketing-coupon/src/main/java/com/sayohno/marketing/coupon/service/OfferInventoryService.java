@@ -19,6 +19,8 @@ import com.sayohno.marketing.coupon.stock.OfferStockGateway;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -175,20 +177,22 @@ public class OfferInventoryService {
         OfferInventoryCommand command = commandMapper.selectOne(Wrappers.<OfferInventoryCommand>lambdaQuery()
                 .eq(OfferInventoryCommand::getInventoryId, inventoryId)
                 .eq(OfferInventoryCommand::getIdempotencyKey, idempotencyKey.trim()));
-        if (command != null && (command.getTargetQuantity() != targetQuantity || command.getMaxClaimsPerUser() != maxClaimsPerUser)) {
-            throw new BizException(ErrorCode.CONFLICT, "同一幂等键的投放参数不一致");
-        }
-        if (command == null) {
-            OfferInventoryCommand created = new OfferInventoryCommand();
-            created.setInventoryId(inventoryId);
-            created.setIdempotencyKey(idempotencyKey.trim());
-            created.setTargetQuantity(targetQuantity);
-            created.setMaxClaimsPerUser(maxClaimsPerUser);
-            try {
-                commandMapper.insert(created);
-            } catch (DataIntegrityViolationException exception) {
-                throw new BizException(ErrorCode.CONFLICT, "投放请求冲突，请用原幂等键重试");
+        if (command != null) {
+            if (command.getTargetQuantity() != targetQuantity || command.getMaxClaimsPerUser() != maxClaimsPerUser) {
+                throw new BizException(ErrorCode.CONFLICT, "同一幂等键的投放参数不一致");
             }
+            // 同参幂等键命中历史命令时直接返回当前投放，防止乱序重试把后续已追加的库存误减回旧值。
+            return allocation;
+        }
+        OfferInventoryCommand created = new OfferInventoryCommand();
+        created.setInventoryId(inventoryId);
+        created.setIdempotencyKey(idempotencyKey.trim());
+        created.setTargetQuantity(targetQuantity);
+        created.setMaxClaimsPerUser(maxClaimsPerUser);
+        try {
+            commandMapper.insert(created);
+        } catch (DataIntegrityViolationException exception) {
+            throw new BizException(ErrorCode.CONFLICT, "投放请求冲突，请用原幂等键重试");
         }
         allocation = allocationMapper.selectById(inventoryId);
         if (maxClaimsPerUser != allocation.getMaxClaimsPerUser()) {
@@ -206,7 +210,7 @@ public class OfferInventoryService {
             if (allocationMapper.addQuantity(inventoryId, delta, allocation.getQuantity(), LocalDateTime.now()) != 1) {
                 throw new BizException(ErrorCode.CONFLICT, "投放数量已变化，请重试");
             }
-            stockGateway.increaseAllocationIfPresent(inventoryId, delta);
+            afterCommit(() -> stockGateway.increaseAllocationIfPresent(inventoryId, delta));
         } else if (delta < 0) {
             if (!allowReduce) {
                 throw new BizException(ErrorCode.CONFLICT, "开场后不能减少投放");
@@ -216,29 +220,43 @@ public class OfferInventoryService {
                 throw new BizException(ErrorCode.VALIDATION, "减少后的投放不能少于已领取数量");
             }
             templateMapper.returnUnallocated(allocation.getPlanId(), reduce, LocalDateTime.now());
-            stockGateway.decreaseAllocationIfPresent(inventoryId, reduce);
+            afterCommit(() -> stockGateway.decreaseAllocationIfPresent(inventoryId, reduce));
         }
         return allocationMapper.selectById(inventoryId);
     }
 
     @Transactional
     public OfferInventory freeze(long inventoryId) {
-        OfferInventory allocation = allocationMapper.selectById(inventoryId);
+        // 先对投放行加 FOR UPDATE 排他锁，确保读取 claimedCount 与冻结之间不会插入新的领券提交，守恒退回未领库存。
+        OfferInventory allocation = allocationMapper.lockById(inventoryId);
         if (allocation == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "投放不存在");
         }
         if (allocation.getStatus() == InventoryStatus.FROZEN) {
             return allocation;
         }
-        int unclaimed = allocation.getQuantity() - allocation.getClaimedCount();
+        int unclaimed = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount());
         if (allocationMapper.freeze(inventoryId, LocalDateTime.now()) != 1) {
             return allocationMapper.selectById(inventoryId);
         }
         if (unclaimed > 0) {
             templateMapper.returnUnallocated(allocation.getPlanId(), unclaimed, LocalDateTime.now());
         }
-        stockGateway.deleteAllocation(inventoryId);
+        afterCommit(() -> stockGateway.deleteAllocation(inventoryId));
         return allocationMapper.selectById(inventoryId);
+    }
+
+    private static void afterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+        } else {
+            action.run();
+        }
     }
 
     public OfferInventory find(long inventoryId) {

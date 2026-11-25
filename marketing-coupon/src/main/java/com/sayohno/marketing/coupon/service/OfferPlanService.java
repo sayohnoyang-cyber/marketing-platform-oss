@@ -112,8 +112,33 @@ public class OfferPlanService {
                 .collect(java.util.stream.Collectors.toMap(OfferPlan::getId, t -> t, (a, b) -> a));
     }
 
-    /** Public offer fields only. The caller must resolve the owning campaign first. */
+    /** 仅返回券公开展示字段，并按确定性键 coupon:offer:{templateId} 优先命中 Redis 缓存。 */
     public java.util.Map<String, Object> publicOffer(long templateId, long merchantId) {
+        String key = offerCacheKey(templateId);
+        var cache = redis.getIfAvailable();
+        if (cache != null) {
+            try {
+                String raw = cache.opsForValue().get(key);
+                if (raw != null && !raw.isBlank()) {
+                    var node = json.readTree(raw);
+                    if (!Long.valueOf(merchantId).equals(node.path("merchantId").asLong(-1L))) {
+                        throw new BizException(ErrorCode.NOT_FOUND, "优惠券模板不存在");
+                    }
+                    java.util.Map<String, Object> cached = new java.util.LinkedHashMap<>();
+                    cached.put("couponName", node.path("couponName").asText(""));
+                    cached.put("couponRule", node.path("couponRule").asText(""));
+                    cached.put("couponValidEndTime", node.hasNonNull("couponValidEndTime")
+                            ? LocalDateTime.parse(node.get("couponValidEndTime").asText()) : null);
+                    cached.put("couponStatus", node.hasNonNull("couponStatus")
+                            ? OfferPlanStatus.fromCode(node.get("couponStatus").asText()) : null);
+                    return cached;
+                }
+            } catch (BizException exception) {
+                throw exception;
+            } catch (Exception ignored) {
+                // 缓存反序列化异常时回源数据库，保障读链路可用。
+            }
+        }
         OfferPlan template = templateMapper.selectById(templateId);
         if (template == null || !Long.valueOf(merchantId).equals(template.getMerchantId())) {
             throw new BizException(ErrorCode.NOT_FOUND, "优惠券模板不存在");
@@ -123,32 +148,61 @@ public class OfferPlanService {
         offer.put("couponRule", template.getBenefitPolicy());
         offer.put("couponValidEndTime", template.getUsableUntil());
         offer.put("couponStatus", template.getStatus());
-        var cache = redis.getIfAvailable();
         if (cache != null) {
             try {
-                String encoded = json.writeValueAsString(offer);
-                String key = "coupon:offer:" + templateId + ":" + com.sayohno.marketing.common.hash.RequestHashes.sha256(encoded);
-                String value = cache.opsForValue().get(key);
-                if (encoded.equals(value)) return offer;
-                cache.opsForValue().set(key, encoded, java.time.Duration.ofMinutes(5));
+                java.util.Map<String, Object> cachePayload = new java.util.LinkedHashMap<>();
+                cachePayload.put("merchantId", template.getMerchantId());
+                cachePayload.put("couponName", template.getTitle());
+                cachePayload.put("couponRule", template.getBenefitPolicy());
+                cachePayload.put("couponValidEndTime", template.getUsableUntil() == null ? null : template.getUsableUntil().toString());
+                cachePayload.put("couponStatus", template.getStatus() == null ? null : template.getStatus().getCode());
+                cache.opsForValue().set(key, json.writeValueAsString(cachePayload), java.time.Duration.ofMinutes(5));
             } catch (RuntimeException | com.fasterxml.jackson.core.JsonProcessingException ignored) {
-                // Offer reads remain available when the optional read cache is unavailable.
+                // 写缓存失败不影响返回数据库读取结果。
             }
         }
         return offer;
     }
 
+    /** 预热券展示规则缓存：先清理旧缓存再回源写入并读回校验。 */
     public java.util.Map<String, Object> warmOffer(long templateId) {
         OfferPlan template = requireOwned(templateId);
         var cache = redis.getIfAvailable();
         if (cache == null) return java.util.Map.of("status", "UNVERIFIED", "detail", "Redis未启用，无法读回券规则缓存");
-        var offer = publicOffer(templateId, template.getMerchantId());
-        try {
-            String encoded = json.writeValueAsString(offer);
-            String key = "coupon:offer:" + templateId + ":" + com.sayohno.marketing.common.hash.RequestHashes.sha256(encoded);
-            boolean matched = encoded.equals(cache.opsForValue().get(key));
-            return java.util.Map.of("status", matched ? "SUCCEEDED" : "FAILED", "detail", matched ? "券展示规则缓存写入并读回一致" : "券规则缓存读回不一致");
-        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) { throw new IllegalStateException(exception); }
+        String key = offerCacheKey(templateId);
+        cache.delete(key);
+        publicOffer(templateId, template.getMerchantId());
+        String readBack = cache.opsForValue().get(key);
+        boolean matched = readBack != null && !readBack.isBlank();
+        return java.util.Map.of("status", matched ? "SUCCEEDED" : "FAILED",
+                "detail", matched ? "券展示规则缓存写入并读回一致" : "券规则缓存读回不一致");
+    }
+
+    private static String offerCacheKey(long templateId) {
+        return "coupon:offer:" + templateId;
+    }
+
+    private void evictOfferCache(long templateId) {
+        var cache = redis.getIfAvailable();
+        if (cache == null) {
+            return;
+        }
+        Runnable deleteTask = () -> {
+            try {
+                cache.delete(offerCacheKey(templateId));
+            } catch (RuntimeException ignored) {
+            }
+        };
+        deleteTask.run();
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            deleteTask.run();
+                        }
+                    });
+        }
     }
 
     @Transactional
@@ -197,6 +251,7 @@ public class OfferPlanService {
                     templateId, template.getUsableFrom(), template.getUsableUntil(), maxClaimsPerUser));
         }
         templateMapper.updateById(template);
+        evictOfferCache(templateId);
         log(templateId, merchant.getUserId(), "REVISE", null);
         return template;
     }
@@ -210,6 +265,7 @@ public class OfferPlanService {
         }
         template.setStatus(OfferPlanStatus.CLOSED);
         templateMapper.updateById(template);
+        evictOfferCache(templateId);
         log(templateId, merchant.getUserId(), "TERMINATE", null);
         return template;
     }
