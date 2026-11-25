@@ -98,17 +98,18 @@
       </div>
     </div>
 
-    <StudioModal v-if="dialog === 'direct'" title="直接核销优惠券" :busy="saving" @close="dialog = ''">
+    <StudioModal v-if="dialog === 'direct'" title="直接核销优惠券" :busy="saving" @close="closeDirect">
       <form @submit.prevent="submitDirect">
         <label class="field">订单号<input v-model.trim="directForm.orderNo" maxlength="64" required /></label>
-        <label class="field">订单消费金额（元）<input v-model="directForm.orderAmount" type="number" min="0.01" max="9999999999.99" step="0.01" required @input="quoteDiscount = null" /></label>
-        <label class="field">商品编号（选填）<input v-model.trim="directForm.goodsNumber" maxlength="64" @input="quoteDiscount = null" /></label>
-        <div v-if="quoteDiscount != null" class="flow-message">
+        <!-- 输入订单金额后自动防抖试算优惠与顾客实付，移除无实际用途的商品编号输入框 -->
+        <label class="field">订单消费金额（元）<input v-model="directForm.orderAmount" type="number" min="0.01" max="9999999999.99" step="0.01" required @input="scheduleQuote" /></label>
+        <p v-if="quoting" class="note">正在试算优惠金额…</p>
+        <div v-else-if="quoteDiscount != null" class="flow-message">
           <div class="checkrow"><span>预计优惠金额</span><b>-¥{{ Number(quoteDiscount).toFixed(2) }}</b></div>
           <div class="checkrow"><span>顾客预计实付</span><b>¥{{ Math.max(0, Number(directForm.orderAmount || 0) - Number(quoteDiscount)).toFixed(2) }}</b></div>
         </div>
         <p v-if="formError" class="form-alert" role="alert">{{ formError }}</p>
-        <div class="actions modal-actions"><button class="btn" type="button" :disabled="saving || quoting || !directForm.orderAmount" @click="previewQuote">{{ quoting ? '试算中…' : '试算优惠' }}</button><button class="btn" type="button" :disabled="saving" @click="dialog = ''">取消</button><button class="btn primary" :disabled="saving">{{ saving ? '核销中…' : '确认核销' }}</button></div>
+        <div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="closeDirect">取消</button><button class="btn primary" :disabled="saving">{{ saving ? '核销中…' : '确认核销' }}</button></div>
       </form>
     </StudioModal>
 
@@ -149,9 +150,9 @@ export default {
   components: { EmptyState, StudioModal },
   data() {
     return {
-      code: '', coupon: null, loading: false, saving: false, quoting: false, quoteDiscount: null, error: '', notice: '',
+      code: '', coupon: null, loading: false, saving: false, quoting: false, quoteDiscount: null, quoteTimer: 0, quoteToken: 0, error: '', notice: '',
       dialog: '', selected: null, targetVoucherId: null, refundAmount: '', formError: '',
-      directForm: { orderNo: '', orderAmount: '', goodsNumber: '' },
+      directForm: { orderNo: '', orderAmount: '' },
       ledgerRows: [], ledgerTotal: 0, ledgerPage: 1, ledgerSize: 20, ledgerKeyword: '', ledgerStatus: 'ALL', ledgerLoading: false, ledgerError: '',
       scanActive: false, scanError: '', scanStream: null, scanTimer: 0
     }
@@ -171,6 +172,8 @@ export default {
     this.$refs.codeInput?.focus()
   },
   beforeUnmount() {
+    window.clearTimeout(this.quoteTimer)
+    this.quoteToken++
     this.stopScanStream()
   },
   methods: {
@@ -217,23 +220,49 @@ export default {
       this.lookup()
     },
     openDirect() {
-      this.formError = ''; this.notice = ''; this.quoteDiscount = null
-      this.directForm = { orderNo: `POS${Date.now()}`, orderAmount: '', goodsNumber: '' }
+      window.clearTimeout(this.quoteTimer)
+      this.quoteToken++
+      this.formError = ''; this.notice = ''; this.quoteDiscount = null; this.quoting = false
+      this.directForm = { orderNo: `POS${Date.now()}`, orderAmount: '' }
       this.dialog = 'direct'
+    },
+    closeDirect() {
+      window.clearTimeout(this.quoteTimer)
+      this.quoteToken++
+      this.quoting = false
+      this.dialog = ''
+    },
+    /** 订单金额变化后 300ms 防抖自动试算优惠金额与顾客实付 */
+    scheduleQuote() {
+      window.clearTimeout(this.quoteTimer)
+      this.quoteDiscount = null
+      this.formError = ''
+      const amount = Number(this.directForm.orderAmount)
+      if (!this.directForm.orderAmount || !Number.isFinite(amount) || amount <= 0) {
+        this.quoteToken++
+        this.quoting = false
+        return
+      }
+      this.quoteTimer = window.setTimeout(() => this.previewQuote(), 300)
     },
     /** 试算优惠金额与顾客实付，便于核销前与消费者当面确认 */
     async previewQuote() {
-      if (this.quoting || !this.directForm.orderAmount) return
+      const amount = Number(this.directForm.orderAmount)
+      if (!this.directForm.orderAmount || !Number.isFinite(amount) || amount <= 0 || !this.coupon?.id) return
+      const token = ++this.quoteToken
       this.quoting = true; this.formError = ''; this.quoteDiscount = null
       try {
         const res = await http.post(`/merchant/vouchers/${this.coupon.id}/quote`, {
           orderNo: this.directForm.orderNo || 'QUOTE',
           orderAmount: this.directForm.orderAmount,
-          goodsNumber: this.directForm.goodsNumber || null
+          goodsNumber: null
         })
-        this.quoteDiscount = res.data
-      } catch (error) { this.formError = error?.message || '试算失败' }
-      finally { this.quoting = false }
+        if (token === this.quoteToken) this.quoteDiscount = res.data
+      } catch (error) {
+        if (token === this.quoteToken) this.formError = error?.message || '试算失败'
+      } finally {
+        if (token === this.quoteToken) this.quoting = false
+      }
     },
     async submitDirect() {
       if (this.saving) return
@@ -242,10 +271,10 @@ export default {
         await http.post(`/merchant/vouchers/${this.coupon.id}/redeem`, {
           orderNo: this.directForm.orderNo,
           orderAmount: this.directForm.orderAmount,
-          goodsNumber: this.directForm.goodsNumber || null
+          goodsNumber: null
         })
         this.coupon = (await http.get(`/merchant/vouchers/${this.coupon.id}`)).data
-        this.dialog = ''; this.notice = '已核销'
+        this.closeDirect(); this.notice = '已核销'
         this.loadRedemptions(1)
       } catch (error) { this.formError = error?.message || '核销失败' }
       finally { this.saving = false }

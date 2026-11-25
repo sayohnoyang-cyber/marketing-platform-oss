@@ -29,7 +29,8 @@
                   <span>已投放 {{ formatNumber(putOf(item)) }} / {{ formatNumber(item.issuedTotal) }}</span>
                   <div class="row-actions">
                     <button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openStock(item)">追加库存</button>
-                    <button class="linkbtn" type="button" @click="openEdit(item)">编辑</button>
+                    <!-- 已停发的券模板不再允许编辑，避免与已结束状态产生语义冲突 -->
+                    <button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openEdit(item)">编辑</button>
                     <button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openTerminate(item)">停发</button>
                     <router-link v-for="activity in usersOf(item)" :key="activity.id" class="linkbtn" :title="activity.name" :to="`/activities/${activity.id}/setup`">{{ activity.name }}</router-link>
                     <span v-if="!usersOf(item).length">未用于活动</span>
@@ -51,7 +52,7 @@
                     <td>{{ formatNumber(putOf(item)) }}</td>
                     <td>{{ formatNumber(item.inventoryQty) }}</td>
                     <td>{{ usersOf(item).map((activity) => activity.name).join('、') || '未用于活动' }}</td>
-                    <td><div class="row-actions"><button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openStock(item)">追加库存</button><button class="linkbtn" type="button" @click="openEdit(item)">编辑</button><button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openTerminate(item)">停发</button></div></td>
+                    <td><div class="row-actions"><button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openStock(item)">追加库存</button><button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openEdit(item)">编辑</button><button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openTerminate(item)">停发</button></div></td>
                   </tr>
                 </tbody>
               </table>
@@ -127,15 +128,17 @@
     </StudioModal>
     <StudioModal v-if="editTarget" title="编辑券模板" :busy="saving" @close="editTarget = null">
       <form class="config-form-grid" @submit.prevent="submitEdit">
+        <!-- 已有投放或领券记录时锁定核心优惠规则，防止篡改已领券面或击穿活动预算 -->
+        <p v-if="editRuleLocked" class="note" style="grid-column: 1 / -1">该券已有投放或领券记录，仅可修改名称、总限领与有效期，核心优惠规则已锁定。</p>
         <label class="field">名称<input v-model.trim="editForm.title" required maxlength="256" /></label>
         <label class="field">每人总限领<input v-model.number="editForm.limit" type="number" min="1" step="1" required /></label>
-        <label v-if="editTarget.benefitKind === 'percent_off'" class="field">折扣（例如 8.5 折）<input v-model.number="editForm.discount" type="number" min="0.1" max="9.9" step="0.1" required /></label>
-        <label v-if="editTarget.benefitKind !== 'amount_off'" class="field">使用门槛（元）<input v-model.trim="editForm.terms" required /></label>
-        <label class="field">单张最高优惠（元）<input v-model.trim="editForm.amount" required /></label>
+        <label v-if="editTarget.benefitKind === 'percent_off'" class="field">折扣（例如 8.5 折）<input v-model.number="editForm.discount" type="number" min="0.1" max="9.9" step="0.1" :disabled="editRuleLocked" required /></label>
+        <label v-if="editTarget.benefitKind !== 'amount_off'" class="field">使用门槛（元）<input v-model.trim="editForm.terms" :disabled="editRuleLocked" required /></label>
+        <label class="field">单张最高优惠（元）<input v-model.trim="editForm.amount" :disabled="editRuleLocked" required /></label>
         <label class="field">生效开始<input v-model="editForm.validStart" type="datetime-local" required /></label>
         <label class="field">使用截止<input v-model="editForm.validEnd" type="datetime-local" required /></label>
-        <label class="field">领取后有效期<select v-model="editForm.validityMode"><option value="template">跟随券使用截止时间</option><option value="hours">领取后固定小时内有效</option></select></label>
-        <label v-if="editForm.validityMode === 'hours'" class="field">领取后有效小时数<input v-model.number="editForm.validityHours" type="number" min="1" max="8760" step="1" required /></label>
+        <label class="field">领取后有效期<select v-model="editForm.validityMode" :disabled="editRuleLocked"><option value="template">跟随券使用截止时间</option><option value="hours">领取后固定小时内有效</option></select></label>
+        <label v-if="editForm.validityMode === 'hours'" class="field">领取后有效小时数<input v-model.number="editForm.validityHours" type="number" min="1" max="8760" step="1" :disabled="editRuleLocked" required /></label>
         <div class="actions modal-actions">
           <button class="btn" type="button" :disabled="saving" @click="editTarget = null">取消</button>
           <button class="btn primary" :disabled="saving">{{ saving ? '保存中…' : '保存修改' }}</button>
@@ -197,6 +200,14 @@ export default {
     },
     soon() {
       return [...this.records].sort((a, b) => String(a.usableUntil).localeCompare(String(b.usableUntil))).slice(0, 3)
+    },
+    // 判断当前编辑中的券模板是否已有活动投放或发券记录，据此锁定核心优惠规则
+    editRuleLocked() {
+      if (!this.editTarget) return false
+      return Number(this.editTarget.openRemaining || 0) > 0
+        || Number(this.editTarget.issuedCount || 0) > 0
+        || Number(this.putOf(this.editTarget) || 0) > 0
+        || this.usersOf(this.editTarget).length > 0
     }
   },
   created() {
@@ -332,13 +343,17 @@ export default {
         nextBenefit.percentOff = (1 - Number(this.editForm.discount) / 10).toFixed(4)
       }
       try {
-        await reviseTemplate(this.editTarget.id, {
+        const payload = {
           title: this.editForm.title,
           usableFrom: fromLocalInput(this.editForm.validStart),
           usableUntil: fromLocalInput(this.editForm.validEnd),
-          claimPolicy: JSON.stringify({ maxClaimsPerUser: Number(this.editForm.limit) }),
-          benefitPolicy: JSON.stringify(nextBenefit)
-        })
+          claimPolicy: JSON.stringify({ maxClaimsPerUser: Number(this.editForm.limit) })
+        }
+        // 核心优惠规则未锁定时才提交 benefitPolicy，避免误触后端不可变校验
+        if (!this.editRuleLocked) {
+          payload.benefitPolicy = JSON.stringify(nextBenefit)
+        }
+        await reviseTemplate(this.editTarget.id, payload)
         this.notice = `已保存「${this.editForm.title}」的规则修改`
         this.editTarget = null
         await this.load()

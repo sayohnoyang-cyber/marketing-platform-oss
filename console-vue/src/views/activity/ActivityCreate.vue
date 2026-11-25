@@ -29,6 +29,8 @@
                 <option>会员专享活动</option>
                 <option>新客领取活动</option>
               </select>
+              <!-- 向运营透明展示人群资格判定口径，与 C 端校验逻辑保持一致 -->
+              <small v-if="typeHint" class="muted">{{ typeHint }}</small>
             </label>
             <label class="field">开场时间
               <input v-model="form.startDate" type="datetime-local" />
@@ -47,8 +49,8 @@
           <p v-if="loading" class="loading">正在读取券库…</p>
           <p v-else-if="loadError" class="error" role="alert">{{ loadError }} <button class="linkbtn" @click="load">重试</button></p>
           <EmptyState v-else-if="!templates.length" title="暂无优惠券"><router-link class="btn" to="/coupons">前往券库</router-link></EmptyState>
-          <!-- 仅允许选用生效中且仍有剩余可投放库存的券模板 -->
-          <CouponChoice v-show="!loading && !loadError" v-for="item in templates" :key="item.id" :chosen="form.planId === String(item.id)" :name="item.title" :face="couponFace(item.benefitPolicy)" :rule="ruleText(item)" :title="validText(item)" :disabled="item.status !== 'open' || (Number(item.inventoryQty) <= 0 && form.planId !== String(item.id))" @click="choose(item)">{{ item.status !== 'open' ? '已停发 · ' : '' }}可投放 {{ formatNumber(item.inventoryQty) }} 张 · 至 {{ clockLabel(item.usableUntil).slice(0, 10) }}</CouponChoice>
+          <!-- 仅允许选用生效中、有剩余可投放库存且有效期覆盖活动时间的券模板 -->
+          <CouponChoice v-show="!loading && !loadError" v-for="item in templates" :key="item.id" :chosen="form.planId === String(item.id)" :name="item.title" :face="couponFace(item.benefitPolicy)" :rule="ruleText(item)" :title="validText(item)" :disabled="item.status !== 'open' || (Number(item.inventoryQty) <= 0 && form.planId !== String(item.id)) || (timeOk && !covers(item) && form.planId !== String(item.id))" @click="choose(item)">{{ couponDisabledHint(item) }}可投放 {{ formatNumber(item.inventoryQty) }} 张 · 至 {{ clockLabel(item.usableUntil).slice(0, 10) }}</CouponChoice>
           <template v-if="selected">
             <div class="checkrow">
               <span>投放数量</span>
@@ -142,6 +144,11 @@ export default {
     },
     timeOk() {
       return Boolean(this.form.startDate && this.form.endDate && this.form.endDate > this.form.startDate)
+    },
+    typeHint() {
+      if (this.form.type === '新客领取活动') return '仅限本工作空间首次领券用户参与'
+      if (this.form.type === '会员专享活动') return '仅限在本工作空间有历史核销记录的用户参与'
+      return ''
     },
     checks() {
       const coupon = this.selected
@@ -241,10 +248,16 @@ export default {
       const amount = moneyTimes(ruleAmount(this.selected?.benefitPolicy), this.form.quantity)
       return amount == null ? 0 : Math.round(Number(amount) * 100)
     },
+    couponDisabledHint(item) {
+      if (item.status !== 'open') return '已停发 · '
+      if (Number(item.inventoryQty) <= 0) return '库存不足 · '
+      if (this.timeOk && !this.covers(item)) return '有效期未覆盖活动时间 · '
+      return ''
+    },
     choose(item) {
       const isSelected = this.form.planId === String(item.id)
-      // 已停发或无剩余库存的券不允许新选，但允许取消已选中的旧草稿项
-      if (!isSelected && (item.status !== 'open' || Number(item.inventoryQty) <= 0)) return
+      // 已停发、零库存或有效期未覆盖活动时间的券不允许新选，但允许取消已选中的旧草稿项
+      if (!isSelected && (item.status !== 'open' || Number(item.inventoryQty) <= 0 || (this.timeOk && !this.covers(item)))) return
       this.form.planId = isSelected ? '' : String(item.id)
       if (this.selected && Number(this.form.quantity) > Number(this.selected.inventoryQty)) {
         this.form.quantity = Number(this.selected.inventoryQty) || 1
@@ -336,7 +349,8 @@ export default {
         if (this.departed) return
         this.finished = true
         try { localStorage.removeItem(this.storageKey) } catch { /* 服务端保存已完成。 */ }
-        this.$router.push(continueConfig ? `/activities/${id}/promote` : '/activities')
+        // 已选券时直接进入推广入口，未选券则先停留在活动配置页完成选券与投放
+        this.$router.push(continueConfig ? `/activities/${id}/${this.form.planId ? 'promote' : 'setup'}` : '/activities')
       } catch (error) {
         this.error = `${error?.message || '保存失败'}；可继续保存，已完成步骤会保留`
         this.persistDraft()

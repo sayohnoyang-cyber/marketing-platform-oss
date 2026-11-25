@@ -66,7 +66,6 @@
               <option value="SOLDOUT">已领完</option>
               <option value="ENDED">已结束</option>
               <option value="OFFLINE">已下线</option>
-              <option value="PAUSED">已暂停</option>
               <option value="CANCELLED">已终止</option>
               <option value="PENDING">有待处理事项</option>
             </select>

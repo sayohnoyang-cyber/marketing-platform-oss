@@ -7,8 +7,8 @@
       <div class="info-actions"><button class="btn" @click="editing = true">修改活动信息</button></div>
     </div>
     <StudioModal v-if="editing" title="活动信息与领取时间" :busy="saving" @close="cancelEdit">
-      
-      <form class="config-form-grid" @submit.prevent="save"><label class="field">活动名称<input v-model.trim="form.name" required maxlength="128" /></label><label class="field">活动类型<select v-model="form.activityType"><option>优惠券推广活动</option><option>会员专享活动</option><option>新客领取活动</option></select></label><label class="field">预算上限（元）<input v-model="form.budgetAmount" type="number" min="0" max="9999999999.99" step="0.01" required /></label><label class="field">领取开始<input v-model="form.startTime" type="datetime-local" required :disabled="startLocked" /></label><label class="field">领取结束<input v-model="form.endTime" type="datetime-local" required /></label><p v-if="startLocked" class="note">开场后开始时间已锁定，结束时间只能延长，并且不能晚于券的使用有效期。</p><p v-if="failed" class="form-alert" role="alert">{{ message }}</p><div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="cancelEdit">取消</button><button class="btn primary" :disabled="saving || !dirty">{{ saving ? '保存中…' : '保存' }}</button></div></form>
+      <!-- 预算上限统一在下方「选券与投放」卡片维护，避免同一页出现两处预算输入框 -->
+      <form class="config-form-grid" @submit.prevent="save"><label class="field">活动名称<input v-model.trim="form.name" required maxlength="128" /></label><label class="field">活动类型<select v-model="form.activityType"><option>优惠券推广活动</option><option>会员专享活动</option><option>新客领取活动</option></select><small v-if="typeHint" class="muted">{{ typeHint }}</small></label><label class="field">领取开始<input v-model="form.startTime" type="datetime-local" required :disabled="startLocked" /></label><label class="field">领取结束<input v-model="form.endTime" type="datetime-local" required /></label><p v-if="startLocked" class="note">开场后开始时间已锁定，结束时间只能延长，并且不能晚于券的使用有效期。</p><p v-if="failed" class="form-alert" role="alert">{{ message }}</p><div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="cancelEdit">取消</button><button class="btn primary" :disabled="saving || !dirty">{{ saving ? '保存中…' : '保存' }}</button></div></form>
     </StudioModal>
   </div>
 </template>
@@ -29,9 +29,14 @@ export default {
     startLocked() {
       return this.activity.publishStatus && this.activity.publishStatus !== 'DRAFT' && this.activity.timePhase !== 'BEFORE'
     },
+    typeHint() {
+      if (this.form.activityType === '新客领取活动') return '仅限本工作空间首次领券用户参与'
+      if (this.form.activityType === '会员专享活动') return '仅限在本工作空间有历史核销记录的用户参与'
+      return ''
+    },
     dirty() {
       const origin = this.blank()
-      return this.form.name !== origin.name || this.form.activityType !== origin.activityType || this.form.budgetAmount !== origin.budgetAmount || this.form.startTime !== origin.startTime || this.form.endTime !== origin.endTime
+      return this.form.name !== origin.name || this.form.activityType !== origin.activityType || this.form.startTime !== origin.startTime || this.form.endTime !== origin.endTime
     }
   },
   watch: {
@@ -56,7 +61,6 @@ export default {
       return {
         name: this.activity.name || '',
         activityType: this.activity.activityType || '优惠券推广活动',
-        budgetAmount: String(this.activity.budgetAmount ?? '0'),
         startTime: toLocalInput(this.activity.startTime),
         endTime: toLocalInput(this.activity.endTime)
       }
@@ -78,7 +82,6 @@ export default {
         await updateActivity(this.activity.id, {
           name: this.form.name,
           activityType: this.form.activityType,
-          budgetAmount: this.form.budgetAmount,
           startTime: fromLocalInput(this.form.startTime),
           endTime: fromLocalInput(this.form.endTime),
           version: this.activity.version

@@ -39,25 +39,29 @@
         <p class="note">{{ board.redeemRateNote || '直接打开活动直达页不经过短链时，落地页到达可能大于短链点击。' }}</p>
       </div>
 
+      <!-- 合并展示各入口与渠道的访问、领取、核销及退款明细，消除重复表格 -->
       <div class="card tablecard section-gap">
-        <div class="tabletop"><h2>各入口与渠道转化明细</h2></div>
-        <ActivityEntries :activity="current" :channels="channels" :main="main" :reports="board.channels" />
-      </div>
-
-      <div class="card tablecard section-gap">
-        <div class="tabletop"><h2>全链路转化与退款</h2></div>
+        <div class="tabletop"><h2>各入口与渠道全链路明细</h2></div>
+        <p v-if="copyNotice" :class="copyFailed ? 'error' : 'flow-message'" role="status">{{ copyNotice }}</p>
         <div class="tableoverflow">
-          <table>
-            <thead><tr><th>来源</th><th>短链点击</th><th>落地页到达</th><th>领取</th><th>核销</th><th>退款笔数</th><th>退款金额</th></tr></thead>
+          <table class="entry-table">
+            <thead><tr><th>来源</th><th>入口链接</th><th>短链点击</th><th>落地页到达 / 预约</th><th>领取</th><th>核销</th><th>退款笔数</th><th>退款金额</th><th>操作</th></tr></thead>
             <tbody>
-              <tr v-for="item in board.channels" :key="item.kind + (item.channelId || 'direct')">
-                <td>{{ item.name }}</td>
-                <td>{{ formatNumber(item.clicks || 0) }}</td>
-                <td>{{ formatNumber(item.visits || 0) }}</td>
+              <tr v-for="item in channelRows" :key="item.key">
+                <td><strong>{{ item.name }}</strong></td>
+                <td><EntryLink :url="item.url">{{ item.url }}</EntryLink></td>
+                <td>{{ item.hasShortLink ? formatNumber(item.clicks || 0) : '—' }}</td>
+                <td>{{ formatNumber(item.visits || 0) }} / {{ formatNumber(item.reservations || 0) }}</td>
                 <td>{{ formatNumber(item.claims) }}</td>
                 <td>{{ formatNumber(item.redeems) }}</td>
                 <td>{{ formatNumber(item.refunds) }}</td>
                 <td>{{ refundText(item) }}</td>
+                <td>
+                  <div class="row-actions">
+                    <button class="linkbtn" type="button" :disabled="!item.url" @click="copyUrl(item.url)">复制链接</button>
+                    <router-link class="linkbtn" :to="`/preview?activity=${current.id}&source=${item.source}`">预览此入口</router-link>
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -68,16 +72,39 @@
 </template>
 
 <script>
+import EntryLink from '@/components/EntryLink.vue'
+import { copyText } from '@/lib/clipboard'
 import { activityReview } from '@/api/campaign'
-import ActivityEntries from '../ActivityEntries.vue'
 import { clockLabel, displayPhase, formatNumber, leftOf, phaseText } from '../format'
 
 export default {
-  components: { ActivityEntries },
+  components: { EntryLink },
   props: { activity: { type: Object, required: true }, channels: { type: Array, default: () => [] }, main: { type: Object, default: () => ({}) } },
   emits: ['snapshot'],
-  data() { return { board: null, loading: false, error: '', timer: 0, requestToken: 0 } },
-  computed: { current() { return this.board?.activity || this.activity } },
+  data() { return { board: null, loading: false, error: '', timer: 0, requestToken: 0, copyNotice: '', copyFailed: false } },
+  computed: {
+    current() { return this.board?.activity || this.activity },
+    // 将渠道统计与入口地址拼装为单表数据，直接访问排在首行
+    channelRows() {
+      const origin = typeof window !== 'undefined' ? window.location.origin : ''
+      const directUrl = `${origin}/a/${this.current.id}`
+      const hasMain = Boolean(this.main?.fullShortUrl)
+      const baseUrl = hasMain ? this.main.fullShortUrl : directUrl
+      return (this.board?.channels || []).map((row) => {
+        const isDirect = row.kind === 'DIRECT'
+        const channel = isDirect ? null : this.channels.find((ch) => String(ch.id) === String(row.channelId))
+        const source = isDirect ? 'direct' : (channel?.channelCode || '')
+        const url = isDirect ? baseUrl : (source ? `${baseUrl}?c=${encodeURIComponent(source)}` : '')
+        return {
+          ...row,
+          key: row.kind + (row.channelId || 'direct'),
+          source,
+          url,
+          hasShortLink: hasMain
+        }
+      })
+    }
+  },
   watch: { 'activity.id': { immediate: true, handler() { this.board = null; this.load() } } },
   mounted() {
     // 活动处于预热或进行中时每 10 秒自动刷新（页面隐藏时暂停）
@@ -94,6 +121,12 @@ export default {
   methods: {
     clockLabel, displayPhase, formatNumber, leftOf, phaseText,
     onVisibility() { if (!document.hidden && !this.loading) this.load() },
+    async copyUrl(url) {
+      if (!url) return
+      this.copyFailed = false
+      try { await copyText(url); this.copyNotice = '入口链接已复制' }
+      catch { this.copyFailed = true; this.copyNotice = '复制失败，请手动复制入口地址' }
+    },
     refundText(row) {
       const missing = Number(row.unreportedRefunds || 0)
       const known = Number(row.knownRefundAmount ?? row.refundAmount ?? 0)
