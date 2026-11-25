@@ -160,8 +160,19 @@ public class LinkDirectoryService {
         return linkMapper.selectList(query.orderByDesc(Link::getId));
     }
 
+    /** 对外普通短链修改入口：禁止越权修改活动主短链的地址、有效期或启停状态。 */
     @Transactional
     public Link updateLink(long linkId, String originUrl, LocalDateTime validDate, Integer enableStatus) {
+        var guard = activityGuards.getIfAvailable();
+        if (guard != null) {
+            guard.assertNotActivityMainLink(linkId);
+        }
+        return updateManagedLink(linkId, originUrl, validDate, enableStatus);
+    }
+
+    /** 供活动模块内部同步改期与主链启停的受管更新方法，跳过普通短链防误改拦截。 */
+    @Transactional
+    public Link updateManagedLink(long linkId, String originUrl, LocalDateTime validDate, Integer enableStatus) {
         Link link = requireActiveLink(linkId);
         if (originUrl != null) {
             validateOrigin(originUrl);
@@ -179,8 +190,13 @@ public class LinkDirectoryService {
         return link;
     }
 
+    /** 普通短链移入回收站：禁止直接回收正在绑定活动的推广主短链。 */
     @Transactional
     public void recycle(long linkId) {
+        var guard = activityGuards.getIfAvailable();
+        if (guard != null) {
+            guard.assertNotActivityMainLink(linkId);
+        }
         Link link = requireActiveLink(linkId);
         link.setDelTime(System.currentTimeMillis());
         link.setDelFlag(1);

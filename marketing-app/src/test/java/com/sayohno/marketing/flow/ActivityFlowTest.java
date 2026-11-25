@@ -24,6 +24,7 @@ import com.sayohno.marketing.identity.dao.mapper.IamMerchantMapper;
 import com.sayohno.marketing.identity.dao.mapper.IamShopMapper;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.dao.mapper.LinkMapper;
+import com.sayohno.marketing.shortlink.service.LinkDirectoryService;
 import com.sayohno.marketing.shortlink.service.RedirectService;
 import com.sayohno.marketing.support.MemoryStockConfiguration;
 import com.sayohno.marketing.support.TestIdentityConfiguration;
@@ -75,6 +76,8 @@ class ActivityFlowTest {
     private IamShopMapper shopMapper;
     @Autowired
     private LinkMapper linkMapper;
+    @Autowired
+    private LinkDirectoryService linkDirectoryService;
     @Autowired
     private RedirectService redirectService;
     @Autowired
@@ -602,6 +605,45 @@ class ActivityFlowTest {
         assertEquals(1L, ((Number) firstRow.get("visits")).longValue());
         assertEquals(1L, ((Number) firstRow.get("claims")).longValue());
         assertEquals(0L, ((Number) firstRow.get("reservations")).longValue());
+    }
+
+    @Test
+    void activityPublishesAndClaimsWithoutMainShortLinkAndBlocksDirectLinkTampering() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "直达解耦券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"2.00\",\"validityPeriodHours\":24}");
+        var activity = campaignService.create("直达优先活动", now.minusHours(2), now.minusMinutes(5), now.plusDays(1));
+        flowService.saveOffer(activity.getId(), template.getId(), 5, 1, "direct-only-offer", new BigDecimal("20.00"), null);
+
+        // 不生成主短链即可发布，且主短链检查为非阻断提示项
+        var checks = campaignService.checks(activity.getId());
+        var linkCheck = checks.stream().filter(row -> "main-link".equals(row.get("code"))).findFirst().orElseThrow();
+        assertEquals(false, linkCheck.get("blocking"));
+        assertEquals(false, linkCheck.get("passed"));
+        campaignService.publish(activity.getId());
+
+        // 未生成主短链时直接访问落地页与领券可用
+        Map<String, Object> directVisit = flowService.visit(activity.getId(), null, "direct-visitor-1");
+        assertEquals("CLAIM", directVisit.get("action"));
+        assertEquals("DIRECT", directVisit.get("source"));
+        var voucher = flowService.claim(901L, activity.getId(), template.getId(), "direct-claim-1", String.valueOf(directVisit.get("credential")));
+        org.junit.jupiter.api.Assertions.assertNotNull(voucher.getId());
+
+        // 生成并停用主短链后：通过短链入口受阻，但活动直达页仍可正常访问和领券，且禁止普通短链接口篡改或回收主链
+        Map<String, Object> main = flowService.openMain(activity.getId());
+        long linkId = ((Number) main.get("id")).longValue();
+        String shortUri = String.valueOf(main.get("shortUri"));
+        assertThrows(BizException.class, () -> linkDirectoryService.updateLink(linkId, "https://evil.example", null, null));
+        assertThrows(BizException.class, () -> linkDirectoryService.recycle(linkId));
+
+        campaignService.setMainEnabled(activity.getId(), false);
+        assertEquals("UNAVAILABLE", flowService.entry(shortUri, null, "short-blocked").get("action"));
+        Map<String, Object> stillOpen = flowService.visit(activity.getId(), null, "direct-visitor-2");
+        assertEquals("CLAIM", stillOpen.get("action"));
+        flowService.claim(902L, activity.getId(), template.getId(), "direct-claim-2", String.valueOf(stillOpen.get("credential")));
     }
 
     private Shop shop() {

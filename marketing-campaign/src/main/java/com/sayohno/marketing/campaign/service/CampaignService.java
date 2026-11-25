@@ -37,6 +37,14 @@ import java.util.Map;
 @Service
 public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.common.campaign.ActivityLinkGuard {
     @Override public void assertLinkable(long activityId) { requireOwned(activityId); }
+
+    /** 拦截普通短链接口对活动主短链的直接修改或回收，保证活动主链开关与缓存一致性。 */
+    @Override
+    public void assertNotActivityMainLink(long linkId) {
+        if (findByMainLink(linkId) != null) {
+            throw new BizException(ErrorCode.CONFLICT, "活动主短链请在活动推广入口中管理，不能在普通短链接口修改或回收");
+        }
+    }
     private final CampaignActivityMapper activityMapper;
     private final CampaignOfferMapper couponMapper;
     private final OfferPlanService templateService;
@@ -259,7 +267,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         }
         // 活动改期或延期时同步更新主短链有效期并清理跳转缓存，避免活动未结束而短链提前过期。
         if (activity.getMainLinkId() != null) {
-            linkDirectoryService.updateLink(activity.getMainLinkId(), null, end, null);
+            linkDirectoryService.updateManagedLink(activity.getMainLinkId(), null, end, null);
         }
         pageCache.evict(activityId);
         return activity;
@@ -319,7 +327,8 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         }
         activity.setMainEnabled(enabled ? 1 : 0);
         activityMapper.updateById(activity);
-        linkDirectoryService.updateLink(activity.getMainLinkId(), null, activity.getEndTime(), enabled ? 0 : 1);
+        // 通过受管入口同步更新主短链启停状态，并清理活动页读缓存。
+        linkDirectoryService.updateManagedLink(activity.getMainLinkId(), null, activity.getEndTime(), enabled ? 0 : 1);
         pageCache.evict(activityId);
         return activity;
     }

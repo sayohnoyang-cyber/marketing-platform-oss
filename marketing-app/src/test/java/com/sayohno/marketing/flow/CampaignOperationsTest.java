@@ -193,6 +193,10 @@ class CampaignOperationsTest {
         assertEquals(true, afterPrep.get("prepared"));
         assertEquals("MONITOR_OPENING", afterPrep.get("nextAction"));
         campaigns.setMainEnabled(id, false);
+        // 停用推广主短链后直达落地页仍保持活跃，不置为 NO_ACTIVE_ENTRY
+        var mainDisabled = forecasts.plan(id);
+        assertEquals("WITHIN_CAPACITY", mainDisabled.get("capacityStatus"));
+        campaigns.offline(id);
         var disabled = forecasts.plan(id);
         assertEquals("NO_ACTIVE_ENTRY", disabled.get("capacityStatus"));
         assertEquals(0L, ((Number) disabled.get("eligibleReservations")).longValue());

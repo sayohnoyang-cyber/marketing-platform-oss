@@ -55,7 +55,12 @@ public class CampaignForecastService {
         if (!allowed.equals(request.arrivalRates().keySet())) throw new BizException(ErrorCode.CONFLICT, "渠道已变化，请重新读取预约数据");
         Set<Long> enabled = new HashSet<>();
         flow.channels(activityId).stream().filter(row -> row.getStatus() == 1).forEach(row -> enabled.add(row.getId()));
-        boolean mainEnabled = Integer.valueOf(1).equals(campaigns.requireOwned(activityId).getMainEnabled());
+        var activity = campaigns.requireOwned(activityId);
+        // 直达落地页随活动本身可用性生效，不再受推广主短链开关限制；仅下线/终止/暂停会关闭全部入口。
+        boolean activityOpen = !Set.of(
+                com.sayohno.marketing.campaign.ActivityStatuses.OFFLINE,
+                com.sayohno.marketing.campaign.ActivityStatuses.CANCELLED,
+                com.sayohno.marketing.campaign.ActivityStatuses.PAUSED).contains(activity.getStatus());
         List<Map<String, Object>> rows = new ArrayList<>();
         double arrivals = 0, reservations = 0;
         long currentReservations = 0, eligibleReservations = 0;
@@ -64,7 +69,7 @@ public class CampaignForecastService {
             String key = "DIRECT".equals(report.get("kind")) ? "direct" : String.valueOf(report.get("channelId"));
             Double rate = request.arrivalRates().get(key);
             if (rate == null || !Double.isFinite(rate) || rate < 0 || rate > 100) throw new BizException(ErrorCode.VALIDATION, "到场率须在0到100之间");
-            boolean active = mainEnabled
+            boolean active = activityOpen
                     && ("direct".equals(key) || enabled.contains(((Number) report.get("channelId")).longValue()));
             long visits = report.get("visits") instanceof Number n ? n.longValue() : 0L;
             if (active) channelVisitsSum += visits;
@@ -82,7 +87,7 @@ public class CampaignForecastService {
         long totalVisits = Math.max(flow.effectiveVisitors(activityId), channelVisitsSum > 0 ? 1L : 0L);
         long activeVisits = channelVisitsSum;
         double unreservedRate = Math.max(0.0, Math.min(1.0, properties.getCapacity().getUnreservedArrivalRate()));
-        long unreservedVisitors = mainEnabled ? flow.unreservedActiveVisitors(activityId, new ArrayList<>(enabled)) : 0L;
+        long unreservedVisitors = activityOpen ? flow.unreservedActiveVisitors(activityId, new ArrayList<>(enabled)) : 0L;
         long visitSuggestedUnreservedQps = unreservedVisitors == 0 ? 0L
                 : Math.max(1L, Math.round(unreservedVisitors * unreservedRate * request.attempts() / 10.0));
         Double visitToReservationRate = totalVisits > 0

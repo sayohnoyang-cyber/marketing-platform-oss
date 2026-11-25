@@ -222,10 +222,10 @@ public class CampaignFlowService {
             long id = ((Number) row.get("id")).longValue();
             List<CampaignChannel> channels = channelsByActivity.getOrDefault(id, List.of());
             long enabledChannels = channels.stream().filter(ch -> ch.getStatus() != null && ch.getStatus() == 1).count();
-            boolean mainOn = Boolean.TRUE.equals(row.get("mainEnabled"));
             row.put("channelCount", channels.size());
             row.put("enabledChannels", enabledChannels);
-            row.put("entryCount", mainOn ? 1 + enabledChannels : 0);
+            // 活动直达页默认可用，因此总入口数至少包含 1 个直达入口及已启用渠道数。
+            row.put("entryCount", 1 + enabledChannels);
             row.put("visits", visitCounts.getOrDefault(id, 0L));
             row.put("claims", claimCounts.getOrDefault(id, 0L));
             row.put("reservations", reservationCounts.getOrDefault(id, 0L));
@@ -253,12 +253,7 @@ public class CampaignFlowService {
      */
     public Map<String, Object> visit(long activityId, String channelCode, String visitorId, boolean recordVisit) {
         CampaignPageCache.PageSnapshot snapshot = pageCache.getOrLoad(activityId, () -> loadPageSnapshot(activityId));
-        if (snapshot.mainLinkId() == null) {
-            throw new BizException(ErrorCode.NOT_FOUND, "活动还没有主链");
-        }
-        if (snapshot.mainLinkEnableStatus() == null) {
-            throw new BizException(ErrorCode.NOT_FOUND, "主链不存在");
-        }
+        // 直达落地页 /a/{activityId} 与推广主短链解耦，未生成或停用主短链时直达页仍可正常访问。
         return renderFromSnapshot(snapshot, channelCode, visitorId, recordVisit);
     }
 
@@ -384,9 +379,7 @@ public class CampaignFlowService {
         if (channelCode != null && !channelCode.isBlank() && !channelCode.matches("[A-Za-z0-9]{1,32}")) {
             return "渠道参数不合法";
         }
-        boolean mainOff = snapshot.mainLinkId() != null && (snapshot.mainEnabled() == null || snapshot.mainEnabled() != 1
-                || snapshot.mainLinkEnableStatus() == null || snapshot.mainLinkEnableStatus() != 0);
-        if (mainOff) return "主链已停用";
+        // 直达页仅校验活动自身生命周期状态与渠道参数，不再因主短链停用而连坐阻断。
         if (phase == ActivityPhase.OFFLINE) return "活动已下线";
         if (phase == ActivityPhase.CANCELLED) return "活动已终止";
         if (phase == ActivityPhase.PAUSED) return "活动已暂停";
@@ -677,9 +670,7 @@ public class CampaignFlowService {
         if (!phase.claimOpen()) {
             throw new BizException(ErrorCode.CONFLICT, "活动未开场、已下线、已结束或已暂停，不能领取");
         }
-        if (activity.getMainLinkId() != null && (activity.getMainEnabled() == null || activity.getMainEnabled() != 1)) {
-            throw new BizException(ErrorCode.CONFLICT, "主链已停用");
-        }
+        // 活动直达页领券不依赖推广主短链开关；若携带渠道来源则仍检查渠道是否启用。
         if (visit.getChannelId() != null) {
             CampaignChannel channel = channelMapper.selectById(visit.getChannelId());
             if (channel == null || channel.getStatus() == null || channel.getStatus() != 1) {

@@ -147,7 +147,13 @@ public class CampaignPreparationService {
             return result(blocked.isEmpty() ? "SUCCEEDED" : "FAILED", blocked.isEmpty() ? "时间、券、投放、入口与预算符合发布条件" : "发布条件未通过，请先处理工作区中的阻断项");
         });
         task(run, data, tasks, "link", "短链映射与布隆检查", () -> {
-            if (activity.getMainLinkId() == null) return result("FAILED", "还没有活动主链");
+            // 未创建或已停用主短链时仅跳过短链预热，直达页不受影响。
+            if (activity.getMainLinkId() == null) {
+                return result("SKIPPED", "未生成推广短链，当前仅使用活动直达页");
+            }
+            if (activity.getMainEnabled() == null || activity.getMainEnabled() != 1) {
+                return result("SKIPPED", "推广主短链已停用，直达页不受影响");
+            }
             return redirects.warmMapping(links.findOwned(activity.getMainLinkId()));
         });
         task(run, data, tasks, "offer", "优惠券展示规则缓存", () -> coupon == null ? result("FAILED", "尚未选券") : templates.warmOffer(coupon.getPlanId()));

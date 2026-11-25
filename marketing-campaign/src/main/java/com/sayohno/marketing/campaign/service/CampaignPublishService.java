@@ -129,19 +129,20 @@ public class CampaignPublishService {
             }
         }
         items.add(item("allocation", allocation != null, allocationReason, "pick"));
+        // 推广主短链改为按需生成：未生成或停用主链不阻断活动发布，活动直达页默认可用。
         boolean main = false;
-        String mainReason = "主链还没有启用";
+        String mainReason = "未启用推广短链（活动直达页可正常访问，可按需在推广入口生成短链）";
         if (activity.getMainLinkId() != null && activity.getMainEnabled() != null && activity.getMainEnabled() == 1) {
             if (loadedLink == null) {
                 mainReason = linkLoadError != null ? linkLoadError : "主链短链不存在";
             } else {
                 main = loadedLink.getEnableStatus() != null && loadedLink.getEnableStatus() == 0;
                 if (!main) {
-                    mainReason = "主链短链已停用";
+                    mainReason = "推广主短链已停用（直达页仍可访问）";
                 }
             }
         }
-        items.add(item("main-link", main, main ? "" : mainReason, "link"));
+        items.add(tip("main-link", main, main ? "" : mainReason, "promote"));
         boolean budget = false;
         String budgetReason = "请设置预算上限";
         if (allocation != null && template != null && activity.getBudgetAmount() != null) {
@@ -164,6 +165,18 @@ public class CampaignPublishService {
         row.put("passed", passed);
         row.put("blocking", true);
         row.put("level", passed ? "ok" : "block");
+        row.put("reason", passed ? "" : reason);
+        row.put("fix", passed ? "" : fix);
+        return row;
+    }
+
+    /** 非阻断提示项：不影响发布，仅提醒运营可按需补充推广短链等可选配置。 */
+    private static Map<String, Object> tip(String code, boolean passed, String reason, String fix) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("code", code);
+        row.put("passed", passed);
+        row.put("blocking", false);
+        row.put("level", passed ? "ok" : "tip");
         row.put("reason", passed ? "" : reason);
         row.put("fix", passed ? "" : fix);
         return row;
