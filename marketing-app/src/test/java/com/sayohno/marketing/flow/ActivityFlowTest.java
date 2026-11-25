@@ -751,6 +751,70 @@ class ActivityFlowTest {
         assertEquals(0, campaignService.checks(draft.getId()).stream().filter(c -> "capacity".equals(c.get("code"))).count());
     }
 
+    @Test
+    void couponTemplateBlocksBenefitRevisionAfterAllocationAndBlocksClosedEdit() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "防篡改券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF_OVER, 20,
+                now.minusDays(1), now.plusDays(5), "{\"maxClaimsPerUser\":2}", "{\"minSpend\":\"100\",\"capAmount\":\"20\",\"validityPeriodHours\":72}");
+
+        // 尚未被活动投放前，允许正常调整核心优惠规则
+        templateService.revise(template.getId(), "防篡改券-初版", null, null, null,
+                "{\"minSpend\":\"100\",\"capAmount\":\"25\",\"validityPeriodHours\":72}");
+
+        var activity = campaignService.create("锁定优惠规则活动", now.plusHours(1), now.plusHours(2), now.plusDays(2));
+        flowService.saveOffer(activity.getId(), template.getId(), 5, 1, "lock-benefit-alloc", new BigDecimal("200.00"), null);
+
+        // 已有投放记录后禁止篡改面额、门槛或领后有效期，但允许改名和传入语义等价的规则
+        assertThrows(BizException.class, () -> templateService.revise(
+                template.getId(), null, null, null, null,
+                "{\"minSpend\":\"200\",\"capAmount\":\"25\",\"validityPeriodHours\":72}"));
+        assertThrows(BizException.class, () -> templateService.revise(
+                template.getId(), null, null, null, null,
+                "{\"minSpend\":\"100\",\"capAmount\":\"50\",\"validityPeriodHours\":72}"));
+        templateService.revise(template.getId(), "防篡改券-改名", null, now.plusDays(6), null,
+                "{\"capAmount\":\"25.00\",\"minSpend\":\"100.0\",\"validityPeriodHours\":72}");
+
+        // 停止活动并停发模板后，禁止再做任何编辑
+        campaignService.cancel(activity.getId());
+        templateService.terminate(template.getId());
+        assertThrows(BizException.class, () -> templateService.revise(
+                template.getId(), "停发后改名", null, null, null, null));
+    }
+
+    @Test
+    void reservationRejectsIneligibleUsersForNewCustomerAndMemberOnlyCampaigns() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "资格前置券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 20,
+                now.minusDays(1), now.plusDays(5), "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"10.00\"}");
+
+        // 先让用户 991 在本工作空间领过一张券（未核销），成为老用户但还不是有核销记录的会员
+        var seed = campaignService.create("历史领券活动", now.minusHours(2), now.minusMinutes(10), now.plusDays(1));
+        flowService.saveOffer(seed.getId(), template.getId(), 5, 1, "seed-offer", new BigDecimal("100.00"), null);
+        campaignService.publish(seed.getId());
+        var seedVisit = flowService.visit(seed.getId(), null, "seed-v");
+        flowService.claim(991L, seed.getId(), template.getId(), "seed-claim-991", String.valueOf(seedVisit.get("credential")));
+
+        // 预热中的新客活动：拒绝已领过券的用户 991 预约，允许全新用户 992 预约
+        var newUserAct = campaignService.create("预热新客活动", now.plusHours(1), now.plusHours(2), now.plusDays(2), "新客领取活动", new BigDecimal("100.00"));
+        flowService.saveOffer(newUserAct.getId(), template.getId(), 5, 1, "new-offer", new BigDecimal("100.00"), null);
+        campaignService.publish(newUserAct.getId());
+        var newVisit991 = flowService.visit(newUserAct.getId(), null, "new-v-991");
+        assertThrows(BizException.class, () -> flowService.reserve(991L, newUserAct.getId(), String.valueOf(newVisit991.get("credential"))));
+        var newVisit992 = flowService.visit(newUserAct.getId(), null, "new-v-992");
+        flowService.reserve(992L, newUserAct.getId(), String.valueOf(newVisit992.get("credential")));
+
+        // 预热中的会员专享活动：拒绝无核销记录的用户 991 预约
+        var memberAct = campaignService.create("预热会员活动", now.plusHours(1), now.plusHours(2), now.plusDays(2), "会员专享活动", new BigDecimal("100.00"));
+        flowService.saveOffer(memberAct.getId(), template.getId(), 5, 1, "member-offer", new BigDecimal("100.00"), null);
+        campaignService.publish(memberAct.getId());
+        var memberVisit991 = flowService.visit(memberAct.getId(), null, "member-v-991");
+        assertThrows(BizException.class, () -> flowService.reserve(991L, memberAct.getId(), String.valueOf(memberVisit991.get("credential"))));
+    }
+
     private Shop shop() {
         IamMerchant merchant = new IamMerchant();
         merchant.setName("活动商家" + UUID.randomUUID());

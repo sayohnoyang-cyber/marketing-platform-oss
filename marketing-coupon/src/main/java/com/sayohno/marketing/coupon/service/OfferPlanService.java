@@ -5,12 +5,17 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.sayohno.marketing.common.campaign.DirectClaimGuard;
 import com.sayohno.marketing.common.exception.BizException;
 import com.sayohno.marketing.common.result.ErrorCode;
+import com.sayohno.marketing.coupon.dao.entity.IssuedVoucher;
+import com.sayohno.marketing.coupon.dao.entity.OfferInventory;
 import com.sayohno.marketing.coupon.dao.entity.OfferPlan;
 import com.sayohno.marketing.coupon.dao.entity.OfferPlanAudit;
+import com.sayohno.marketing.coupon.dao.mapper.IssuedVoucherMapper;
+import com.sayohno.marketing.coupon.dao.mapper.OfferInventoryMapper;
 import com.sayohno.marketing.coupon.dao.mapper.OfferPlanAuditMapper;
 import com.sayohno.marketing.coupon.dao.mapper.OfferPlanMapper;
 import com.sayohno.marketing.coupon.enums.ApplyScope;
 import com.sayohno.marketing.coupon.enums.BenefitKind;
+import com.sayohno.marketing.coupon.enums.InventoryStatus;
 import com.sayohno.marketing.coupon.enums.IssuerScope;
 import com.sayohno.marketing.coupon.enums.OfferPlanStatus;
 import com.sayohno.marketing.coupon.stock.OfferStockGateway;
@@ -19,7 +24,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Objects;
 
 @Service
 public class OfferPlanService {
@@ -30,6 +37,8 @@ public class OfferPlanService {
     private final org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     private final org.springframework.beans.factory.ObjectProvider<DirectClaimGuard> campaignGuards;
+    private final org.springframework.beans.factory.ObjectProvider<OfferInventoryMapper> inventoryMapper;
+    private final org.springframework.beans.factory.ObjectProvider<IssuedVoucherMapper> issuedVoucherMapper;
 
     public OfferPlanService(OfferPlanMapper templateMapper,
                                  OfferPlanAuditMapper logMapper,
@@ -37,7 +46,17 @@ public class OfferPlanService {
                                  OfferStockGateway stockGateway,
                                  org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis,
                                  com.fasterxml.jackson.databind.ObjectMapper json) {
-        this(templateMapper, logMapper, merchantAccessService, stockGateway, redis, json, null);
+        this(templateMapper, logMapper, merchantAccessService, stockGateway, redis, json, null, null, null);
+    }
+
+    public OfferPlanService(OfferPlanMapper templateMapper,
+                                 OfferPlanAuditMapper logMapper,
+                                 MerchantAccessService merchantAccessService,
+                                 OfferStockGateway stockGateway,
+                                 org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis,
+                                 com.fasterxml.jackson.databind.ObjectMapper json,
+                                 org.springframework.beans.factory.ObjectProvider<DirectClaimGuard> campaignGuards) {
+        this(templateMapper, logMapper, merchantAccessService, stockGateway, redis, json, campaignGuards, null, null);
     }
 
     @Autowired
@@ -47,7 +66,9 @@ public class OfferPlanService {
                                  OfferStockGateway stockGateway,
                                  org.springframework.beans.factory.ObjectProvider<org.springframework.data.redis.core.StringRedisTemplate> redis,
                                  com.fasterxml.jackson.databind.ObjectMapper json,
-                                 org.springframework.beans.factory.ObjectProvider<DirectClaimGuard> campaignGuards) {
+                                 org.springframework.beans.factory.ObjectProvider<DirectClaimGuard> campaignGuards,
+                                 org.springframework.beans.factory.ObjectProvider<OfferInventoryMapper> inventoryMapper,
+                                 org.springframework.beans.factory.ObjectProvider<IssuedVoucherMapper> issuedVoucherMapper) {
         this.templateMapper = templateMapper;
         this.logMapper = logMapper;
         this.merchantAccessService = merchantAccessService;
@@ -55,6 +76,8 @@ public class OfferPlanService {
         this.redis = redis;
         this.json = json;
         this.campaignGuards = campaignGuards;
+        this.inventoryMapper = inventoryMapper;
+        this.issuedVoucherMapper = issuedVoucherMapper;
     }
 
     @Transactional
@@ -225,6 +248,10 @@ public class OfferPlanService {
                                  String claimPolicy, String benefitPolicy) {
         var merchant = merchantAccessService.requireMerchant();
         OfferPlan template = requireOwned(templateId);
+        // 已停发的券模板不可再做任何修改，避免已结束方案状态与规则发生歧义。
+        if (template.getStatus() != OfferPlanStatus.OPEN) {
+            throw new BizException(ErrorCode.CONFLICT, "已停发的券模板不能修改");
+        }
         if (name != null && !name.isBlank()) {
             template.setTitle(name.trim());
         }
@@ -240,6 +267,10 @@ public class OfferPlanService {
         }
         if (benefitPolicy != null && !benefitPolicy.isBlank()) {
             OfferPolicyRules.parse(benefitPolicy, "核销规则");
+            // 已有活动投放或发券记录后锁定核心优惠规则，防止篡改用户已领券面或击穿活动预算上限。
+            if (!sameBenefitRules(template.getBenefitPolicy(), benefitPolicy) && hasAllocatedOrIssued(template)) {
+                throw new BizException(ErrorCode.CONFLICT, "该券模板已有投放或领券记录，优惠金额、门槛、折扣与领后有效期不可修改");
+            }
             template.setBenefitPolicy(benefitPolicy);
         }
         if (!template.getUsableUntil().isAfter(template.getUsableFrom())) {
@@ -254,6 +285,55 @@ public class OfferPlanService {
         evictOfferCache(templateId);
         log(templateId, merchant.getUserId(), "REVISE", null);
         return template;
+    }
+
+    /** 判断券模板是否已产生投放占用或实际发券记录。 */
+    private boolean hasAllocatedOrIssued(OfferPlan template) {
+        if (template.getIssuedTotal() != null && template.getInventoryQty() != null
+                && template.getIssuedTotal() > template.getInventoryQty()) {
+            return true;
+        }
+        OfferInventoryMapper invMapper = inventoryMapper == null ? null : inventoryMapper.getIfAvailable();
+        if (invMapper != null && invMapper.selectCount(Wrappers.<OfferInventory>lambdaQuery()
+                .eq(OfferInventory::getPlanId, template.getId())
+                .eq(OfferInventory::getStatus, InventoryStatus.OPEN)) > 0) {
+            return true;
+        }
+        IssuedVoucherMapper voucherMapper = issuedVoucherMapper == null ? null : issuedVoucherMapper.getIfAvailable();
+        return voucherMapper != null && voucherMapper.selectCount(Wrappers.<IssuedVoucher>lambdaQuery()
+                .eq(IssuedVoucher::getPlanId, template.getId())) > 0;
+    }
+
+    /** 语义比对新旧优惠规则的核心字段（门槛、最高优惠、折扣、领后有效小时数），忽略 JSON 键序与空白差异。 */
+    private boolean sameBenefitRules(String currentRaw, String nextRaw) {
+        try {
+            var current = json.readTree(currentRaw == null || currentRaw.isBlank() ? "{}" : currentRaw);
+            var next = json.readTree(nextRaw);
+            return sameDecimalField(current, next, "minSpend")
+                    && sameDecimalField(current, next, "capAmount")
+                    && sameDecimalField(current, next, "percentOff")
+                    && current.path("validityPeriodHours").asInt(0) == next.path("validityPeriodHours").asInt(0);
+        } catch (Exception exception) {
+            return Objects.equals(currentRaw, nextRaw);
+        }
+    }
+
+    private static boolean sameDecimalField(com.fasterxml.jackson.databind.JsonNode a,
+                                            com.fasterxml.jackson.databind.JsonNode b,
+                                            String field) {
+        String left = a.hasNonNull(field) ? a.get(field).asText("").trim() : "";
+        String right = b.hasNonNull(field) ? b.get(field).asText("").trim() : "";
+        if (left.isEmpty() && right.isEmpty()) {
+            return true;
+        }
+        if (left.isEmpty() || right.isEmpty()) {
+            return false;
+        }
+        try {
+            return new BigDecimal(left).compareTo(new BigDecimal(right)) == 0;
+        } catch (NumberFormatException exception) {
+            return left.equals(right);
+        }
     }
 
     @Transactional

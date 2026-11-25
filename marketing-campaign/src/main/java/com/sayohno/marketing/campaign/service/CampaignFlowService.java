@@ -538,6 +538,11 @@ public class CampaignFlowService {
         if (!campaignService.phase(activity).reservationOpen()) {
             throw new BizException(ErrorCode.CONFLICT, "当前不在预约时间");
         }
+        // 预约阶段前置校验活动人群资格，避免不符合条件的用户白预约并污染开场峰值预测。
+        String eligibilityReason = eligibilityFailure(activity, userId);
+        if (eligibilityReason != null) {
+            throw new BizException(ErrorCode.VALIDATION, eligibilityReason);
+        }
         CampaignReservation existing = reservationMapper.selectOne(Wrappers.<CampaignReservation>lambdaQuery()
                 .eq(CampaignReservation::getActivityId, activityId)
                 .eq(CampaignReservation::getUserId, userId));
