@@ -60,6 +60,11 @@ router.beforeEach((to) => {
   if (!store.state.token) {
     return { path: '/login', query: { return: to.fullPath } }
   }
+  // 普通领券用户不允许进入商家工作台路由，自动引导至个人券包
+  const profile = store.state.profile
+  if (profile && !profile.merchantId && to.name !== 'my-coupons') {
+    return { path: '/my-coupons' }
+  }
   return true
 })
 

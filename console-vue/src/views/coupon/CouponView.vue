@@ -23,7 +23,7 @@
               <div class="tk-stub"><b :class="{ compact: couponFace(item.benefitPolicy).replace(/[¥￥折\s]/g, '').length > 4 }"><CouponFace :value="couponFace(item.benefitPolicy)" /></b><span>{{ ruleText(item) }}</span></div>
               <div class="tk-body">
                 <div class="tk-top"><strong :title="item.title">{{ item.title }}</strong><small>{{ typeLabels[item.benefitKind] || '优惠券' }} · {{ item.status === 'open' ? '可选用' : '已结束' }}</small></div>
-                <div class="tk-meta"><span>有效期 {{ clockLabel(item.usableFrom) }} — {{ clockLabel(item.usableUntil) }}</span><span>发行 {{ formatNumber(item.issuedTotal) }} 张</span></div>
+                <div class="tk-meta"><span>有效期 {{ clockLabel(item.usableFrom) }} — {{ clockLabel(item.usableUntil) }}</span><span>发行 {{ formatNumber(item.issuedTotal) }} 张{{ couponValidityText(item.benefitPolicy) ? ` · ${couponValidityText(item.benefitPolicy)}` : '' }}</span></div>
                 <div class="tk-bar"><i :style="{ width: barWidth(item) }"></i></div>
                 <div class="tk-foot">
                   <span>已投放 {{ formatNumber(putOf(item)) }} / {{ formatNumber(item.issuedTotal) }}</span>
@@ -45,8 +45,8 @@
                 <tbody>
                   <tr v-for="item in records" :key="item.id">
                     <td><strong>{{ item.title }}</strong><small>{{ item.status === 'open' ? '可选用' : '已停发' }}</small></td>
-                    <td>{{ ruleText(item) }}</td>
-                    <td>{{ clockLabel(item.usableUntil) }}</td>
+                    <td>{{ ruleText(item) }}<small v-if="couponValidityText(item.benefitPolicy)">{{ couponValidityText(item.benefitPolicy) }}</small></td>
+                    <td>{{ clockLabel(item.usableFrom) }} — {{ clockLabel(item.usableUntil) }}</td>
                     <td>{{ formatNumber(item.issuedTotal) }}</td>
                     <td>{{ formatNumber(putOf(item)) }}</td>
                     <td>{{ formatNumber(item.inventoryQty) }}</td>
@@ -103,7 +103,10 @@
         <label v-if="form.type === 'percent_off'" class="field">折扣（例如 8.5 折）<input v-model.number="form.discount" type="number" min="0.1" max="9.9" step="0.1" required /></label>
         <label v-if="form.type !== 'amount_off'" class="field">使用门槛<input v-model.trim="form.terms" required /></label>
         <label class="field">单张最高优惠<input v-model.trim="form.amount" required /></label>
+        <label class="field">生效开始<input v-model="form.validStart" type="datetime-local" required /></label>
         <label class="field">使用截止<input v-model="form.validEnd" type="datetime-local" required /></label>
+        <label class="field">领取后有效期<select v-model="form.validityMode"><option value="template">跟随券使用截止时间</option><option value="hours">领取后固定小时内有效</option></select></label>
+        <label v-if="form.validityMode === 'hours'" class="field">领取后有效小时数<input v-model.number="form.validityHours" type="number" min="1" max="8760" step="1" required /></label>
         <div class="actions modal-actions">
           <button class="btn primary" :disabled="saving">{{ saving ? '保存中…' : '保存' }}</button>
           <button class="btn" type="button" @click="show = false">取消</button>
@@ -129,7 +132,10 @@
         <label v-if="editTarget.benefitKind === 'percent_off'" class="field">折扣（例如 8.5 折）<input v-model.number="editForm.discount" type="number" min="0.1" max="9.9" step="0.1" required /></label>
         <label v-if="editTarget.benefitKind !== 'amount_off'" class="field">使用门槛（元）<input v-model.trim="editForm.terms" required /></label>
         <label class="field">单张最高优惠（元）<input v-model.trim="editForm.amount" required /></label>
+        <label class="field">生效开始<input v-model="editForm.validStart" type="datetime-local" required /></label>
         <label class="field">使用截止<input v-model="editForm.validEnd" type="datetime-local" required /></label>
+        <label class="field">领取后有效期<select v-model="editForm.validityMode"><option value="template">跟随券使用截止时间</option><option value="hours">领取后固定小时内有效</option></select></label>
+        <label v-if="editForm.validityMode === 'hours'" class="field">领取后有效小时数<input v-model.number="editForm.validityHours" type="number" min="1" max="8760" step="1" required /></label>
         <div class="actions modal-actions">
           <button class="btn" type="button" :disabled="saving" @click="editTarget = null">取消</button>
           <button class="btn primary" :disabled="saving">{{ saving ? '保存中…' : '保存修改' }}</button>
@@ -155,22 +161,26 @@ import StudioModal from '@/components/StudioModal.vue'
 import DotStage from '@/components/DotStage.vue'
 import { listActivities } from '@/api/campaign'
 import { createTemplate, increaseStock, listAllTemplates, reviseTemplate, terminateTemplate } from '@/api/coupon'
-import { clockLabel, formatNumber, fromLocalInput, toLocalInput, couponRuleText, couponFace } from '@/views/activity/format'
+import { clockLabel, formatNumber, fromLocalInput, toLocalInput, couponRuleText, couponFace, couponValidityText } from '@/views/activity/format'
 
 export default {
   components: { EmptyState, StudioModal, CouponFace, DotStage },
   data() {
+    const start = new Date()
     const end = new Date(Date.now() + 30 * 86400000)
     const pad = (value) => String(value).padStart(2, '0')
     return {
       records: [], activities: [], loading: false, saving: false, error: '', notice: '', formError: '', show: false, view: 'cards',
       stockTarget: null, addStockCount: 100, editTarget: null, terminateTarget: null,
-      editForm: { title: '', limit: 1, terms: '0', amount: '10', discount: 8.5, validEnd: '' },
+      editForm: { title: '', limit: 1, terms: '0', amount: '10', discount: 8.5, validStart: '', validEnd: '', validityMode: 'template', validityHours: 72 },
       tones: ['#c6613f', '#788c5d', '#6a9bcc', '#c8a26b', '#8a7fb0'],
       typeLabels: { amount_off: '立减券', amount_off_over: '满减券', percent_off: '折扣券' },
       form: {
         type: 'amount_off_over', discount: 8.5, name: '', stock: 100, limit: 1, terms: '199', amount: '30',
-        validEnd: `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}T23:59`
+        validStart: `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}T00:00`,
+        validEnd: `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}T23:59`,
+        validityMode: 'template',
+        validityHours: 72
       }
     }
   },
@@ -193,7 +203,7 @@ export default {
     this.load()
   },
   methods: {
-    clockLabel, formatNumber, couponFace,
+    clockLabel, formatNumber, couponFace, couponValidityText,
     sum(field) {
       if (!this.records.length) return 0
       if (this.records.some((item) => item[field] == null)) return null
@@ -247,10 +257,15 @@ export default {
           applyScope: 'storewide',
           benefitKind: this.form.type,
           inventoryQty: this.form.stock,
-          usableFrom: this.localNow(),
+          usableFrom: fromLocalInput(this.form.validStart) || this.localNow(),
           usableUntil: fromLocalInput(this.form.validEnd),
           claimPolicy: JSON.stringify({ maxClaimsPerUser: this.form.limit }),
-          benefitPolicy: JSON.stringify({ minSpend: this.form.type === 'amount_off' ? '0' : this.form.terms, capAmount: this.form.amount, ...(this.form.type === 'percent_off' ? { percentOff: (1 - this.form.discount / 10).toFixed(4) } : {}), validityPeriodHours: 72 })
+          benefitPolicy: JSON.stringify({
+            minSpend: this.form.type === 'amount_off' ? '0' : this.form.terms,
+            capAmount: this.form.amount,
+            ...(this.form.type === 'percent_off' ? { percentOff: (1 - this.form.discount / 10).toFixed(4) } : {}),
+            validityPeriodHours: this.form.validityMode === 'hours' ? Number(this.form.validityHours) : 0
+          })
         })
         this.show = false
         this.notice = '券模板已创建'
@@ -295,7 +310,10 @@ export default {
         terms: String(benefit.minSpend ?? '0'),
         amount: String(benefit.capAmount ?? '10'),
         discount: benefit.percentOff != null ? Number(((1 - Number(benefit.percentOff)) * 10).toFixed(1)) : 8.5,
-        validEnd: toLocalInput(item.usableUntil)
+        validStart: toLocalInput(item.usableFrom),
+        validEnd: toLocalInput(item.usableUntil),
+        validityMode: Number(benefit.validityPeriodHours) > 0 ? 'hours' : 'template',
+        validityHours: Number(benefit.validityPeriodHours) > 0 ? Number(benefit.validityPeriodHours) : 72
       }
     },
     async submitEdit() {
@@ -307,7 +325,8 @@ export default {
       const nextBenefit = {
         ...prevBenefit,
         minSpend: this.editTarget.benefitKind === 'amount_off' ? '0' : this.editForm.terms,
-        capAmount: this.editForm.amount
+        capAmount: this.editForm.amount,
+        validityPeriodHours: this.editForm.validityMode === 'hours' ? Number(this.editForm.validityHours) : 0
       }
       if (this.editTarget.benefitKind === 'percent_off') {
         nextBenefit.percentOff = (1 - Number(this.editForm.discount) / 10).toFixed(4)
@@ -315,6 +334,7 @@ export default {
       try {
         await reviseTemplate(this.editTarget.id, {
           title: this.editForm.title,
+          usableFrom: fromLocalInput(this.editForm.validStart),
           usableUntil: fromLocalInput(this.editForm.validEnd),
           claimPolicy: JSON.stringify({ maxClaimsPerUser: Number(this.editForm.limit) }),
           benefitPolicy: JSON.stringify(nextBenefit)

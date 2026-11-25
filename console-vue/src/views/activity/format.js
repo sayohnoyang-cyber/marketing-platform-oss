@@ -114,3 +114,12 @@ export function couponFace(rule) {
   } catch { /* Empty state. */ }
   return '—'
 }
+
+export function couponValidityText(rule) {
+  try {
+    const value = typeof rule === 'string' ? JSON.parse(rule || '{}') : (rule || {})
+    const hours = Number(value.validityPeriodHours || 0)
+    if (hours > 0) return `领取后 ${hours} 小时内有效`
+  } catch { /* 规则不可解析时回退默认展示。 */ }
+  return ''
+}

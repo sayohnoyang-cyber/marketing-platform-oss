@@ -1,6 +1,6 @@
 <template>
-  <main class="page">
-    <section ref="scene" class="scene" aria-hidden="true">
+  <main class="page" :class="{ 'customer-mode': isCustomerEntry }">
+    <section v-if="!isCustomerEntry" ref="scene" class="scene" aria-hidden="true">
       <canvas ref="dots"></canvas>
       <svg ref="links" class="links"></svg>
 
@@ -50,10 +50,11 @@
     </section>
 
     <section class="entry" aria-label="账号入口">
-      <canvas ref="dots2" class="dots2" aria-hidden="true"></canvas>
+      <canvas v-if="!isCustomerEntry" ref="dots2" class="dots2" aria-hidden="true"></canvas>
       <div ref="card" :key="mode" class="form-card rise" style="--delay: .2s">
-        <h2>{{ mode === 'login' ? '登录' : '创建工作空间' }}</h2>
-        <p class="sub">{{ mode === 'login' ? '欢迎回来，继续今天的活动安排。' : '几步完成设置，开始筹备第一场活动。' }}</p>
+        <div v-if="isCustomerEntry" class="customer-brand"><span class="login-mark">序</span><strong>优惠礼遇</strong></div>
+        <h2>{{ isCustomerEntry ? (mode === 'login' ? '登录领券' : '快速注册') : (mode === 'login' ? '登录' : '创建工作空间') }}</h2>
+        <p class="sub">{{ isCustomerEntry ? (mode === 'login' ? '登录后即可领取并保存本场优惠券。' : '创建账号后即可立即参与活动领券。') : (mode === 'login' ? '欢迎回来，继续今天的活动安排。' : '几步完成设置，开始筹备第一场活动。') }}</p>
 
         <p v-if="error" class="notice error" role="alert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></svg>{{ error }}</p>
         <p v-else-if="expired && mode === 'login'" class="notice info" role="status"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>登录已过期，请重新登录。</p>
@@ -71,7 +72,7 @@
           <label v-if="mode === 'login'" class="remember"><input v-model="remember" type="checkbox" />记住账号</label>
           <button class="submit" :disabled="loading" type="submit">
             <span v-if="loading" class="spinner"></span>
-            {{ loading ? (mode === 'login' ? '正在登录…' : '正在创建…') : (mode === 'login' ? '登录' : '创建工作空间') }}
+            {{ loading ? (mode === 'login' ? '正在登录…' : '正在创建…') : isCustomerEntry ? (mode === 'login' ? '登录并继续' : '注册并前往领券') : (mode === 'login' ? '登录' : '创建工作空间') }}
           </button>
         </form>
         <div class="switch">
@@ -82,7 +83,7 @@
       </div>
     </section>
 
-    <svg ref="bridge" class="bridge" aria-hidden="true"></svg>
+    <svg v-if="!isCustomerEntry" ref="bridge" class="bridge" aria-hidden="true"></svg>
   </main>
 </template>
 
@@ -116,6 +117,9 @@ export default {
     }
   },
   computed: {
+    isCustomerEntry() {
+      return Boolean(safeReturn(this.$route.query.return)?.startsWith('/a/'))
+    },
     expired() {
       return this.$route.query.expired === '1'
     },
@@ -137,16 +141,18 @@ export default {
     this.layers = [
       { el: this.$refs.dots, host: this.$refs.scene, base: [205, 198, 182], alpha: 0.55 },
       { el: this.$refs.dots2, host: this.$refs.dots2, base: [214, 208, 194], alpha: 0.5 }
-    ].map(layer => ({ ...layer, ctx: layer.el.getContext('2d') }))
-    this.onPointer = event => { this.pointer = { x: event.clientX, y: event.clientY } }
-    this.onLeave = () => { this.pointer = { x: -9999, y: -9999 } }
-    window.addEventListener('pointermove', this.onPointer)
-    document.addEventListener('pointerleave', this.onLeave)
-    this.observer = new ResizeObserver(() => this.resize())
-    this.observer.observe(document.body)
-    this.resize()
-    this.frame = requestAnimationFrame(this.loop)
-    this.startDemo()
+    ].filter(layer => layer.el && layer.host).map(layer => ({ ...layer, ctx: layer.el.getContext('2d') }))
+    if (this.layers.length) {
+      this.onPointer = event => { this.pointer = { x: event.clientX, y: event.clientY } }
+      this.onLeave = () => { this.pointer = { x: -9999, y: -9999 } }
+      window.addEventListener('pointermove', this.onPointer)
+      document.addEventListener('pointerleave', this.onLeave)
+      this.observer = new ResizeObserver(() => this.resize())
+      this.observer.observe(document.body)
+      this.resize()
+      this.frame = requestAnimationFrame(this.loop)
+    }
+    if (!this.isCustomerEntry) this.startDemo()
   },
   beforeUnmount() {
     cancelAnimationFrame(this.frame)
@@ -225,6 +231,7 @@ export default {
 
     /* ---------- 点阵：左右两块画布共用页面坐标，从“序”向外有序点亮 ---------- */
     resize() {
+      if (!this.layers?.length || !this.$refs.core) return
       const ratio = Math.min(window.devicePixelRatio || 1, 2)
       for (const layer of this.layers) {
         const box = layer.host.getBoundingClientRect()
@@ -291,24 +298,29 @@ export default {
       this.bursts.push({ x, y, t: (performance.now() - this.start) / 1000, power, size })
     },
     cardAnchor() {
+      if (!this.$refs.card) return [0, 0]
       const box = this.$refs.card.getBoundingClientRect()
       return [box.left, box.top + box.height / 2]
     },
     pulseSeal() {
       const seal = this.$refs.seal
+      if (!seal) return
       seal.classList.remove('beat', 'rise')
       void seal.offsetWidth
       seal.classList.add('beat')
     },
     focusRipple() {
+      if (!this.layers?.length) return
       this.burst(this.cx, this.cy, 1, 1400)
       this.pulseSeal()
     },
     typeRipple() {
+      if (!this.layers?.length) return
       const [x, y] = this.cardAnchor()
       this.burst(x, y, 0.55, 420)
     },
     submitRipple() {
+      if (!this.layers?.length) return
       const [x, y] = this.cardAnchor()
       this.burst(x, y, 1, 1600)
       setTimeout(() => {
@@ -320,21 +332,23 @@ export default {
     /* 业务卡片到“序”的虚线连线 */
     drawLinks() {
       const svg = this.$refs.links
-      const scene = this.$refs.scene.getBoundingClientRect()
-      const ox = this.cx - scene.left
-      const oy = this.cy - scene.top
-      svg.setAttribute('viewBox', `0 0 ${scene.width} ${scene.height}`)
-      svg.innerHTML = [...this.$refs.scene.querySelectorAll('[data-link]')].map(el => {
+      const scene = this.$refs.scene
+      if (!svg || !scene) return
+      const boxScene = scene.getBoundingClientRect()
+      const ox = this.cx - boxScene.left
+      const oy = this.cy - boxScene.top
+      svg.setAttribute('viewBox', `0 0 ${boxScene.width} ${boxScene.height}`)
+      svg.innerHTML = [...scene.querySelectorAll('[data-link]')].map(el => {
         const box = el.getBoundingClientRect()
-        const x = box.left - scene.left + box.width / 2
-        const y = box.top - scene.top + box.height / 2
+        const x = box.left - boxScene.left + box.width / 2
+        const y = box.top - boxScene.top + box.height / 2
         return `<path d="M${x} ${y} Q${(x + ox) / 2} ${(y + oy) / 2 - 30} ${ox} ${oy}" />`
       }).join('')
     },
     /* “序”到登录卡片的连线：跨过面板边界，把左右两侧连成一体 */
     drawBridge() {
       const svg = this.$refs.bridge
-      if (!svg || !this.$refs.card) return
+      if (!svg || !this.$refs.card || !this.$refs.core) return
       if (window.innerWidth <= 960) {
         svg.innerHTML = ''
         return
@@ -351,6 +365,10 @@ export default {
 
 <style scoped>
 .page { height: 100svh; min-height: 640px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(420px, 1fr); gap: 16px; padding: 16px; background: var(--bg); color: var(--ink); }
+.page.customer-mode { grid-template-columns: 1fr; place-items: center; }
+.page.customer-mode .form-card::before { display: none; }
+.customer-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.customer-brand strong { font-size: 16px; font-weight: 600; color: var(--ink2); }
 
 /* ---------- 左侧画布 ---------- */
 .scene { position: relative; overflow: hidden; border-radius: 24px; background: var(--cloud); border: 1px solid var(--line); isolation: isolate; }

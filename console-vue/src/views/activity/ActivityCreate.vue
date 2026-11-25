@@ -56,10 +56,8 @@
               <input v-model.number="form.quantity" aria-label="投放数量" type="number" min="1" :max="selected.inventoryQty" />
             </div>
             <div class="checkrow">
-              <span>每人限领</span>
-              <div class="seg">
-                <button v-for="count in limitChoices" :key="count" type="button" :class="{ active: form.maxClaimsPerUser === count }" @click="form.maxClaimsPerUser = count">{{ count }} 张</button>
-              </div>
+              <span>每人限领<small class="muted">（模板上限 {{ personLimit(selected) }} 张）</small></span>
+              <input v-model.number="form.maxClaimsPerUser" aria-label="每人限领" type="number" min="1" :max="personLimit(selected)" step="1" />
             </div>
           </template>
         </div>
@@ -137,10 +135,6 @@ export default {
     selected() {
       return this.templates.find((item) => String(item.id) === this.form.planId)
     },
-    limitChoices() {
-      const limit = this.personLimit(this.selected)
-      return [1, 2].filter((count) => count <= limit)
-    },
     maxGive() {
       if (!this.selected) return '¥0'
       const amount = moneyTimes(ruleAmount(this.selected.benefitPolicy), this.form.quantity)
@@ -154,12 +148,14 @@ export default {
       const covered = coupon && this.timeOk && this.covers(coupon)
       // 校验投放数量是否在券模板当前可投放剩余（inventoryQty）范围内
       const stockOk = coupon && Number.isInteger(Number(this.form.quantity)) && Number(this.form.quantity) >= 1 && Number(this.form.quantity) <= Number(coupon.inventoryQty)
+      const limitOk = coupon && Number.isInteger(Number(this.form.maxClaimsPerUser)) && Number(this.form.maxClaimsPerUser) >= 1 && Number(this.form.maxClaimsPerUser) <= this.personLimit(coupon)
       const budgetOk = coupon && this.giveCents() <= this.budgetCents()
       return [
         { ok: Boolean(this.form.name), label: '活动名称' },
         { ok: this.timeOk, label: '活动时间' },
         { ok: Boolean(covered), label: '券有效期覆盖活动时间' },
         { ok: Boolean(stockOk), label: '投放数量在可投放范围内' },
+        { ok: Boolean(limitOk), label: `每人限领不超过模板上限（${coupon ? this.personLimit(coupon) : 1} 张）` },
         { ok: Boolean(budgetOk), label: `最大让利不超过预算（¥${formatNumber(this.form.budget || 0)}）` },
         { ok: true, label: '活动直达页立即可用，短链与渠道可选' }
       ]
@@ -208,7 +204,13 @@ export default {
         const [activities, templates] = await Promise.all([listActivities(), listAllTemplates()])
         this.activities = activities.data || []
         this.templates = templates.data?.records || []
-        if (!this.copyFrom && this.activities.length) this.copyFrom = String(this.activities[0].id)
+        const copyId = this.$route?.query?.copy
+        if (copyId && !this.hasDraft && this.activities.some(item => String(item.id) === String(copyId))) {
+          this.copyFrom = String(copyId)
+          await this.cloneFrom()
+        } else if (!this.copyFrom && this.activities.length) {
+          this.copyFrom = String(this.activities[0].id)
+        }
       } catch (error) {
         this.loadError = error?.message || '活动与券库读取失败'
       } finally {
@@ -319,6 +321,10 @@ export default {
         return
       }
       if (!this.plan && this.selected && !this.checks[4].ok) {
+        this.error = `每人限领须为 1–${this.personLimit(this.selected)} 张的整数`
+        return
+      }
+      if (!this.plan && this.selected && !this.checks[5].ok) {
         this.error = '最大让利超过预算'
         return
       }
