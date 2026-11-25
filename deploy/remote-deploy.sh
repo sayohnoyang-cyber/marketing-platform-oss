@@ -12,14 +12,19 @@ BASE=/opt/marketing-platform
 IN=$BASE/releases/incoming
 PREV=$BASE/releases/previous
 cd "$BASE"
-# HTTPS 启用后，compose 还必须带上 docker-compose.https.yml，否则重建容器会丢掉 443 和证书挂载。
-run_compose() {
-  if [ -f "$BASE/docker-compose.https.yml" ]; then
-    command docker compose -f docker-compose.yml -f docker-compose.https.yml "$@"
-  else
-    command docker compose "$@"
-  fi
-}
+SELF=$(cd "$(dirname "$0")" && pwd)
+if [ -f "$SELF/nginx/compose-project.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$SELF/nginx/compose-project.sh"
+elif [ -f "$BASE/nginx/compose-project.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$BASE/nginx/compose-project.sh"
+else
+  echo "缺少 compose-project.sh" >&2
+  exit 1
+fi
+COMPOSE_FILE=$(resolve_compose_file "$BASE") || { echo "找不到 compose.yaml 或 docker-compose.yml"; exit 1; }
+# HTTPS 启用后还要带上 docker-compose.https.yml，否则重建容器会丢掉 443 和证书挂载。
 exec 9>/tmp/marketing-deploy.lock
 flock -n 9 || { echo "另一个部署正在进行"; exit 1; }
 set -a; . ./.env; set +a
@@ -136,8 +141,8 @@ ls -1t backups/pre-deploy-*.sql 2>/dev/null | tail -n +6 | xargs -r rm -f
 # 5. 同步 HTTPS 工具。未执行 enable-https.sh 之前只拷文件，不改线上 nginx。
 if [ -d "$IN/nginx" ]; then
   mkdir -p "$BASE/nginx"
-  for f in render_config.py enable-https.sh renew-cert.sh cert-perms.sh \
-    sayohno.bootstrap.conf.template sayohno.https.conf.template server-body.fallback.inc test_render.py; do
+  for f in render_config.py enable-https.sh renew-cert.sh cert-perms.sh compose-project.sh \
+    sayohno.bootstrap.conf.template sayohno.https.conf.template server-body.fallback.inc test_render.py test-compose-file.sh; do
     if [ -f "$IN/nginx/$f" ]; then
       cp "$IN/nginx/$f" "$BASE/nginx/$f"
     fi

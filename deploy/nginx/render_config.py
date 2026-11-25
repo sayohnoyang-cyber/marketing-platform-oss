@@ -264,7 +264,7 @@ def _port_published(port) -> bool:
 def plan_override(compose: dict, config_file: str, base: Path) -> dict:
     service = compose.get("services", {}).get("nginx")
     if not service:
-        raise ValueError("docker-compose.yml 里没有 nginx 服务")
+        raise ValueError("compose 文件里没有 nginx 服务")
     volumes = service.get("volumes") or []
     ports = service.get("ports") or []
     targets = {}
