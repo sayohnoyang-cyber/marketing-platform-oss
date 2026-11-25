@@ -4,6 +4,10 @@ server:
 spring:
   application:
     name: marketing-platform
+  task:
+    scheduling:
+      pool:
+        size: 6
   main:
     allow-bean-definition-overriding: false
   autoconfigure:

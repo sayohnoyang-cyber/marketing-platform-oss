@@ -20,6 +20,8 @@ import com.sayohno.marketing.identity.dao.entity.IamUser;
 import com.sayohno.marketing.identity.dao.mapper.IamUserMapper;
 import com.sayohno.marketing.identity.service.MerchantAccessService;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
@@ -29,9 +31,12 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 @Service
 public class GrantBatchService {
+    private static final Logger log = LoggerFactory.getLogger(GrantBatchService.class);
     private final GrantBatchMapper taskMapper;
     private final GrantBatchErrorMapper failMapper;
     private final ClaimTicketMapper claimRequestMapper;
@@ -123,6 +128,17 @@ public class GrantBatchService {
     }
 
     public int scanDue() {
+        return scanDue(null);
+    }
+
+    /**
+     * 扫描并异步派发到期发券任务到独立线程池，避免大批量 Excel 执行阻塞定时调度线程。
+     */
+    public int scanDueAsync(Executor executor) {
+        return scanDue(executor);
+    }
+
+    private int scanDue(Executor executor) {
         LocalDateTime now = LocalDateTime.now();
         List<GrantBatch> tasks = taskMapper.selectList(Wrappers.<GrantBatch>lambdaQuery()
                 .in(GrantBatch::getStatus, GrantBatchStatus.QUEUED, GrantBatchStatus.RUNNING)
@@ -134,8 +150,17 @@ public class GrantBatchService {
             }
             String token = UUID.randomUUID().toString().replace("-", "");
             if (taskMapper.acquire(task.getId(), token, now.plus(properties.getOffer().getGrantBatchLease()), now) == 1) {
-                execute(task.getId(), token);
-                started++;
+                if (executor == null) {
+                    execute(task.getId(), token);
+                    started++;
+                } else {
+                    try {
+                        executor.execute(() -> execute(task.getId(), token));
+                        started++;
+                    } catch (RejectedExecutionException exception) {
+                        log.warn("批量发券线程池已满，任务 {} 等待租约到期后由下一轮调度接管", task.getId());
+                    }
+                }
             }
         }
         return started;
