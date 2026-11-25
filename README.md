@@ -93,6 +93,23 @@ npm run dev
 
 生产部署可参考 `deploy/` 与 `.github/workflows/deploy.yml`。这两个是通用示例：主机、密钥只应放在环境变量或 GitHub Secrets 里，不要写进仓库。示例工作流里的 SSH 用户是 `root`，如果可以，请改成独立的发布账号。
 
+生产机的 Compose 文件是 `compose.yaml`（本仓库的 `docker-compose.yml` 只给本地依赖用）。`deploy.sh` 和 `enable-https.sh` 会在 `compose.yaml`、`compose.yml`、`docker-compose.yaml`、`docker-compose.yml` 里选实际文件。`docker-compose.yml` 如果只是指向 `compose.yaml` 的符号链接，脚本使用 `compose.yaml`，避免 Compose 把两份配置一起读进去。
+
+服务器 `.env` 的对外地址只有一项：`PUBLIC_ORIGIN=https://sayohno.cn`。`compose.yaml` 把它填进 `CONSOLE_BASE_URL`、`SHORTLINK_PUBLIC_BASE_URL` 和 `MARKETING_WEB_CORSALLOWEDORIGINS_0`。改完后重建应用：
+
+```bash
+docker compose -f compose.yaml -f docker-compose.https.yml up -d --no-deps app
+```
+
+证书镜像是 `certbot/certbot:v2.11.0`。本机已经有这个镜像时，签发和续期用 `docker run --pull never`，不再访问 Docker Hub。本机没有、而且 Docker Hub 超时，脚本会改拉 `docker.m.daocloud.io/certbot/certbot:v2.11.0` 并打成同样的标签。也可以手动：
+
+```bash
+docker pull docker.m.daocloud.io/certbot/certbot:v2.11.0
+docker tag docker.m.daocloud.io/certbot/certbot:v2.11.0 certbot/certbot:v2.11.0
+```
+
+`CERTBOT_IMAGE` 和 `CERTBOT_IMAGE_MIRROR` 可以换成别的镜像名。
+
 ## 测试
 
 ```bash
