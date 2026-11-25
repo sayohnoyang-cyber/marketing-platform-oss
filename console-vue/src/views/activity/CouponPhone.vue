@@ -1,6 +1,7 @@
 <template>
   <div class="device" :class="{ 'public-device': publicPage }">
-    <div class="phonebar"><b>9:41</b><span aria-hidden="true">●●● ▰</span></div>
+    <!-- 仅在后台模拟预览手机壳中显示状态栏，真实 C 端公开落地页隐藏以避免双状态栏 -->
+    <div v-if="!publicPage" class="phonebar"><b>9:41</b><span aria-hidden="true">●●● ▰</span></div>
     <DotStage ref="heroStage" class="phonehero phonehero-motion" :offset-right="28" :offset-top="32" :rings="2" :palette="palette">
       <div class="pb-orbit" aria-hidden="true">
         <svg viewBox="0 0 148 148" fill="none">

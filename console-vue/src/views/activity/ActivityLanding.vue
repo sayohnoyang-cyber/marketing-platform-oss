@@ -28,10 +28,22 @@ export default {
   computed: {
     token() { return this.$store.state.token },
     loginLink() { return { path: '/login', query: { return: this.$route.fullPath } } },
-    canAct() { if (this.error) return false; return this.entry?.action === 'RESERVE' ? !this.reserved : this.entry?.action === 'CLAIM' && this.claimed < Number(this.entry.maxClaimsPerUser || 1) },
+    // 已登录且后端明确判定不符合活动人群资格时，禁止提交预约或领券
+    ineligible() { return Boolean(this.token && this.entry?.eligible === false) },
+    canAct() {
+      if (this.error || this.ineligible) return false
+      return this.entry?.action === 'RESERVE' ? !this.reserved : this.entry?.action === 'CLAIM' && this.claimed < Number(this.entry.maxClaimsPerUser || 1)
+    },
     actionText() {
-      if (this.entry.action === 'RESERVE') return this.reserved ? '已预约 · 等待开场' : '预约活动 · 开场不错过'
-      if (this.entry.action === 'CLAIM') return this.canAct ? '立即领取优惠券' : '已达本场领取上限'
+      if (this.entry.action === 'RESERVE') {
+        if (this.reserved) return '已预约 · 等待开场'
+        if (this.ineligible) return this.entry.eligibilityReason || '暂不符合本场参与条件'
+        return '预约活动 · 开场不错过'
+      }
+      if (this.entry.action === 'CLAIM') {
+        if (this.ineligible) return this.entry.eligibilityReason || '暂不符合本场参与条件'
+        return this.canAct ? '立即领取优惠券' : '已达本场领取上限'
+      }
       return { SOLD_OUT: '本场优惠券已领完', ENDED: '活动已结束', UNAVAILABLE: this.entry.reason || '链接暂不可用' }[this.entry.action] || '暂不可领取'
     },
     eligibilityText() {

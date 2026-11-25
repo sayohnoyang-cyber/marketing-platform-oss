@@ -180,6 +180,28 @@ test('landing exposes eligibility, validity note and cancels active reservation'
   assert.equal(calls[1], '/user/activities/1/reservations/cancel')
 })
 
+test('landing disables action and shows eligibilityReason when signed-in user is ineligible', async () => {
+  let action = 'RESERVE'
+  const vm = await landingHarness(async () => ({
+    data: {
+      activityId: '1',
+      action,
+      personalReserved: false,
+      personalClaimed: 0,
+      eligible: false,
+      eligibilityReason: '本活动仅限新用户参与'
+    }
+  }))
+  await vm.load()
+  assert.equal(vm.canAct, false)
+  assert.equal(vm.actionText, '本活动仅限新用户参与')
+
+  action = 'CLAIM'
+  await vm.load()
+  assert.equal(vm.canAct, false)
+  assert.equal(vm.actionText, '本活动仅限新用户参与')
+})
+
 const { createPlan, savePlan, draftKey, readDraft, writeDraft } = await import('../src/views/activity/createDraft.mjs')
 const creationForm = { name: '精确开场', type: '优惠券推广活动', startDate: '2026-11-20T10:30', endDate: '2026-11-20T12:00', budget: '100', planId: '2', quantity: 10, maxClaimsPerUser: 1 }
 

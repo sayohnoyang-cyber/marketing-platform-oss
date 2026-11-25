@@ -195,9 +195,10 @@ export default {
         if (back && back.startsWith('/a/')) {
           this.$router.push(back)
         } else if (merchant) {
-          this.$router.push('/overview')
+          // 商家登录过期或带目标路径进入时优先回到原工作台页面，避免强制跳回总览
+          this.$router.push(back && !back.startsWith('/login') ? back : '/overview')
         } else {
-          this.$router.push(back || '/my-coupons')
+          this.$router.push(back && back === '/my-coupons' ? back : '/my-coupons')
         }
       } catch (error) {
         this.error = error?.message || '登录失败，请检查账号后重试'
