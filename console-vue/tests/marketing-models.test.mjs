@@ -1,6 +1,9 @@
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { parse, compileTemplate } from '@vue/compiler-sfc'
 
 async function source(name) {
   const text = await readFile(new URL(`../src/views/activity/${name}.js`, import.meta.url), 'utf8')
@@ -200,6 +203,43 @@ test('landing disables action and shows eligibilityReason when signed-in user is
   await vm.load()
   assert.equal(vm.canAct, false)
   assert.equal(vm.actionText, '本活动仅限新用户参与')
+})
+
+test('all imported functions called in Vue templates are exposed in methods', async () => {
+  const srcRoot = fileURLToPath(new URL('../src', import.meta.url))
+  const collectVue = async (dir) => {
+    const entries = await readdir(dir, { withFileTypes: true })
+    const files = []
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) files.push(...await collectVue(full))
+      else if (entry.name.endsWith('.vue')) files.push(full)
+    }
+    return files
+  }
+  for (const file of await collectVue(srcRoot)) {
+    const src = await readFile(file, 'utf8')
+    const { descriptor } = parse(src, { filename: file })
+    if (!descriptor.template || !descriptor.script) continue
+    const compiled = compileTemplate({ source: descriptor.template.content, filename: file, id: file })
+    const ctxCalls = [...new Set([...compiled.code.matchAll(/_ctx\.([A-Za-z_$][\w$]*)\s*\(/g)].map(m => m[1]))]
+    const script = descriptor.script.content
+    const imported = new Set()
+    for (const m of script.matchAll(/import\s*\{([^}]+)\}\s*from/g)) {
+      for (const part of m[1].split(',')) {
+        const name = part.trim().split(/\s+as\s+/).pop().trim()
+        if (name) imported.add(name)
+      }
+    }
+    const methodsIdx = script.indexOf('methods:')
+    const methodsBlock = methodsIdx >= 0 ? script.slice(methodsIdx) : ''
+    for (const fn of ctxCalls) {
+      if (!imported.has(fn)) continue
+      const hasProp = new RegExp(`(?:^|[,{\\n\\r]\\s*)${fn}\\s*(?:,|\\}|:)`).test(methodsBlock)
+      const hasMethodDef = new RegExp(`(?:^|[,{\\n\\r]\\s*)(?:async\\s+)?${fn}\\s*\\([^)]*\\)\\s*\\{`).test(methodsBlock)
+      assert.equal(hasProp || hasMethodDef, true, `${file} 模板调用了导入函数 ${fn}()，但未在 methods 中暴露`)
+    }
+  }
 })
 
 const { createPlan, savePlan, draftKey, readDraft, writeDraft } = await import('../src/views/activity/createDraft.mjs')

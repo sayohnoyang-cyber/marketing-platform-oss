@@ -314,7 +314,8 @@ export default {
       this.current = this.topTabs[next]
       this.$nextTick(() => this.$el.querySelector('.ov-tab[aria-selected="true"]')?.focus())
     },
-    phaseText, left: leftOf, formatNumber, clockLabel, activityPath,
+    // 暴露 displayPhase 供模板顶部活动标签页与下拉框渲染活动状态
+    phaseText, displayPhase, left: leftOf, formatNumber, clockLabel, activityPath,
     actionText(item) {
       const step = stepFor(item)
       if (step === 'setup') return '继续配置'
