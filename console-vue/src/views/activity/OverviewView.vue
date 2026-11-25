@@ -96,36 +96,6 @@
         </div>
       </section>
 
-      <div v-if="current" class="focus-grid">
-        <div class="card opening-card">
-          <div class="sectionhead"><h2>当前活动 · 预约与开场准备</h2><span class="pill" :class="{ amber: !opening.ready }">{{ opening.ready ? '已就绪' : '待检查' }}</span></div>
-          <div class="opening-body"><div class="mini">{{ opening.name || current?.name || '尚未选择活动' }} · 预计开抢压力</div>
-            <div class="opening-reservations"><span>有效预约 <b>{{ formatNumber(opening.plan?.reservationCount) }}</b> 人</span><span>预计到场 <b>{{ formatNumber(opening.plan?.expectedArrivals) }}</b> 人</span></div>
-            <div class="opening-forecast-label">当前预约估算 · 非实时请求量</div>
-            <div class="opening-value"><span>{{ formatNumber(opening.qps) }}<small>次/秒</small></span><span class="pill">{{ opening.plan?.capacityStatus === 'NO_SAMPLE' ? '待积累预约' : '预计峰值' }}</span></div>
-            <div class="meter"><span :style="{ width: capacityPercent == null ? '0%' : `${Math.min(100, capacityPercent)}%` }"></span></div>
-            <div class="metertxt"><span>预计压力 / 安全容量</span><span>{{ capacityPercent == null ? '待验证' : `${capacityPercent}%` }}</span></div>
-            <div class="divider"></div><div v-for="item in readinessRows" :key="item.label" class="checkrow"><span>{{ item.label }}</span><b :class="{ 'pending-text': !item.ready }" :title="item.detail">{{ item.ready ? '✓ 已就绪' : item.status }}</b></div>
-            <router-link class="linkbtn opening-link" :to="current ? `/activities/${current.id}/guard` : '/activities/new'">{{ current ? '进入开场保障（预测与预热）' : '创建活动并配置预测' }}</router-link>
-          </div>
-        </div>
-        <div class="card" style="padding: 24px">
-          <div class="sectionhead" style="padding: 0">
-            <h2>当前活动 · 待处理</h2>
-            <span class="pill" :class="{ amber: pending.length }">{{ pending.length ? pending.length + ' 项' : '全部就绪' }}</span>
-          </div>
-          <p v-if="!pending.length" class="muted">没有需要处理的事项。</p>
-          <div v-for="item in pending" :key="item.code" class="checkrow">
-            <span>{{ item.reason }}</span>
-            <router-link class="linkbtn" :to="activityPath(current, item.fix || 'setup')">去处理</router-link>
-          </div>
-        </div>
-      </div>
-
-      <div class="ov-section-divider">
-        <h2>工作空间整体流量概览</h2>
-        <span class="muted">汇总当前工作空间全部活动数据</span>
-      </div>
       <p v-if="trafficError" class="error" role="alert">{{ trafficError }} <button class="linkbtn" @click="loadTraffic">重新读取流量</button></p>
       <div class="stats traffic-stats">
         <div class="card stat ov-stat" style="--tone: #b87e18; --tone-bg: #f8f0df">
@@ -145,11 +115,40 @@
           <div class="value">{{ formatNumber(traffic?.activityCount) }}<small>个</small></div><div class="statfoot"><span class="delta-up">{{ formatNumber(traffic?.upcomingCount) }} 场</span> 活动即将开始</div>
         </div>
       </div>
-      <div class="card traffic-chart-card" style="margin-bottom: 22px">
-        <div class="sectionhead"><div><h2>全空间有效访问趋势</h2></div><div class="seg"><button type="button" :class="{ active: period === 'today' }" @click="period = 'today'">今日</button><button type="button" :class="{ active: period === 'week' }" @click="period = 'week'">近 7 日</button></div></div>
-        <div class="traffic-legend"><span><i></i>有效访问</span><span><i class="history"></i>历史同期</span></div>
-        <TrafficTrend :points="traffic?.points || []" :period="period" :loading="trafficLoading" />
-        <div v-if="Number(traffic?.visitors) > 0 && traffic?.insight" class="traffic-caption">{{ traffic.insight }}</div>
+
+      <!-- 恢复左趋势图 + 右预约开场准备齐平双栏，避免高低卡片并排造成右侧大面积留白 -->
+      <div class="traffic-layout">
+        <div class="card traffic-chart-card">
+          <div class="sectionhead"><div><h2>全空间有效访问趋势</h2></div><div class="seg"><button type="button" :class="{ active: period === 'today' }" @click="period = 'today'">今日</button><button type="button" :class="{ active: period === 'week' }" @click="period = 'week'">近 7 日</button></div></div>
+          <div class="traffic-legend"><span><i></i>有效访问</span><span><i class="history"></i>历史同期</span></div>
+          <TrafficTrend :points="traffic?.points || []" :period="period" :loading="trafficLoading" />
+          <div v-if="Number(traffic?.visitors) > 0 && traffic?.insight" class="traffic-caption">{{ traffic.insight }}</div>
+        </div>
+        <div class="card opening-card">
+          <div class="sectionhead"><h2>当前活动 · 预约与开场准备</h2><span class="pill" :class="{ amber: !opening.ready }">{{ opening.ready ? '已就绪' : '待检查' }}</span></div>
+          <div class="opening-body"><div class="mini">{{ opening.name || current?.name || '尚未选择活动' }} · 预计开抢压力</div>
+            <div class="opening-reservations"><span>有效预约 <b>{{ formatNumber(opening.plan?.reservationCount) }}</b> 人</span><span>预计到场 <b>{{ formatNumber(opening.plan?.expectedArrivals) }}</b> 人</span></div>
+            <div class="opening-forecast-label">当前预约估算 · 非实时请求量</div>
+            <div class="opening-value"><span>{{ formatNumber(opening.qps) }}<small>次/秒</small></span><span class="pill">{{ opening.plan?.capacityStatus === 'NO_SAMPLE' ? '待积累预约' : '预计峰值' }}</span></div>
+            <div class="meter"><span :style="{ width: capacityPercent == null ? '0%' : `${Math.min(100, capacityPercent)}%` }"></span></div>
+            <div class="metertxt"><span>预计压力 / 安全容量</span><span>{{ capacityPercent == null ? '待验证' : `${capacityPercent}%` }}</span></div>
+            <div class="divider"></div><div v-for="item in readinessRows" :key="item.label" class="checkrow"><span>{{ item.label }}</span><b :class="{ 'pending-text': !item.ready }" :title="item.detail">{{ item.ready ? '✓ 已就绪' : item.status }}</b></div>
+            <router-link class="linkbtn opening-link" :to="current ? `/activities/${current.id}/guard` : '/activities/new'">{{ current ? '进入开场保障（预测与预热）' : '创建活动并配置预测' }}</router-link>
+          </div>
+        </div>
+      </div>
+
+      <!-- 待处理事项单独成通栏横条，无待处理时保持紧凑，不留空洞 -->
+      <div v-if="current" class="card" style="margin-bottom: 22px; padding: 24px">
+        <div class="sectionhead" style="padding: 0">
+          <h2>当前活动 · 待处理</h2>
+          <span class="pill" :class="{ amber: pending.length }">{{ pending.length ? pending.length + ' 项' : '全部就绪' }}</span>
+        </div>
+        <p v-if="!pending.length" class="muted">没有需要处理的事项。</p>
+        <div v-for="item in pending" :key="item.code" class="checkrow">
+          <span>{{ item.reason }}</span>
+          <router-link class="linkbtn" :to="activityPath(current, item.fix || 'setup')">去处理</router-link>
+        </div>
       </div>
       <div class="card">
         <div class="tabletop"><h2>近期活动 <span class="muted" style="margin-left: 9px">{{ rows.length }} 个活动</span></h2></div>
@@ -511,9 +510,6 @@ export default {
 .ov-label { font-size: 12px; color: var(--muted); font-weight: 500; flex-shrink: 0; }
 .ov-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
 .ov-more-select { margin-left: auto; min-height: 34px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: #ffffffd6; color: var(--ink2); font-size: 12px; }
-.focus-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 26px; align-items: start; }
-.ov-section-divider { display: flex; align-items: baseline; gap: 12px; margin: 8px 0 14px; flex-wrap: wrap; }
-.ov-section-divider h2 { margin: 0; font-size: 18px; font-weight: 600; }
 .ov-tab {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 500;
@@ -612,7 +608,7 @@ export default {
 @keyframes ov-swap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 1100px) {
-  .ov-grid, .focus-grid { grid-template-columns: 1fr; }
+  .ov-grid { grid-template-columns: 1fr; }
   .ov-orbit-box { left: 16%; }
 }
 @media (max-width: 720px) {
