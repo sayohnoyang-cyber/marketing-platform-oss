@@ -168,6 +168,11 @@ public class RedisOfferStockGateway implements OfferStockGateway {
         redis.delete(OfferInventoryKeys.inventory(inventoryId));
     }
 
+    @Override
+    public boolean hasAllocationStock(long inventoryId) {
+        return Boolean.TRUE.equals(redis.hasKey(OfferInventoryKeys.inventory(inventoryId)));
+    }
+
     private static int number(Object value) {
         if (value instanceof Number number) {
             return number.intValue();

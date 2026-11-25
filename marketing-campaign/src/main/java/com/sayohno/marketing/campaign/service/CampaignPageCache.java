@@ -26,6 +26,8 @@ public class CampaignPageCache {
     private final ObjectProvider<StringRedisTemplate> redis;
     private final ObjectMapper json;
     private final Map<Long, LocalEntry> localCache = new ConcurrentHashMap<>();
+    /** 按活动 ID 维度做进程内 Singleflight 互斥，合并并发回源加载，防止缓存失效瞬间打穿数据库。 */
+    private final Map<Long, Object> singleflightLocks = new ConcurrentHashMap<>();
 
     public CampaignPageCache(ObjectProvider<StringRedisTemplate> redis, ObjectMapper json) {
         this.redis = redis;
@@ -37,11 +39,23 @@ public class CampaignPageCache {
         if (cached != null) {
             return cached;
         }
-        PageSnapshot loaded = loader.get();
-        if (loaded != null) {
-            write(activityId, loaded);
+        Object lock = singleflightLocks.computeIfAbsent(activityId, ignored -> new Object());
+        try {
+            synchronized (lock) {
+                // 双重检查：并发线程排队进入后直接复用先行线程已回填的缓存结果。
+                PageSnapshot doubleChecked = read(activityId);
+                if (doubleChecked != null) {
+                    return doubleChecked;
+                }
+                PageSnapshot loaded = loader.get();
+                if (loaded != null) {
+                    write(activityId, loaded);
+                }
+                return loaded;
+            }
+        } finally {
+            singleflightLocks.remove(activityId, lock);
         }
-        return loaded;
     }
 
     public void evict(long activityId) {

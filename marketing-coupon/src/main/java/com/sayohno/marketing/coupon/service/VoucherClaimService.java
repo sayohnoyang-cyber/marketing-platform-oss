@@ -258,10 +258,13 @@ public class VoucherClaimService {
 
     public int recoverStuck(Duration olderThan) {
         LocalDateTime deadline = LocalDateTime.now().minus(olderThan);
+        // 限制单轮扫描恢复条数，避免积压过长时一次性拉取全部超时票据撑爆内存或长期占用调度线程。
         List<ClaimTicket> stuck = requestMapper.selectList(Wrappers.<ClaimTicket>lambdaQuery()
                 .in(ClaimTicket::getStatus, ClaimTicketStatus.PENDING, ClaimTicketStatus.RESERVED)
                 .isNotNull(ClaimTicket::getReservationToken)
-                .le(ClaimTicket::getLeaseUntil, deadline));
+                .le(ClaimTicket::getLeaseUntil, deadline)
+                .orderByAsc(ClaimTicket::getId)
+                .last("LIMIT 200"));
         int recovered = 0;
         for (ClaimTicket request : stuck) {
             String token = UUID.randomUUID().toString().replace("-", "");
@@ -391,12 +394,16 @@ public class VoucherClaimService {
             return new int[]{hold.templateCount(), hold.allocCount()};
         }
         int templateLimit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
-        // 重建 Redis 库存时扣除数据库里已在途的 RESERVED 票据数，避免因异步落库滞后放大可用库存。
-        Long inFlight = requestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
-                .eq(ClaimTicket::getInventoryId, inventoryId)
-                .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
-        int remaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount()
-                - (inFlight == null ? 0 : inFlight.intValue()));
+        // 仅当 Redis 库存键尚未初始化时才回源查询数据库剩余并扣除在途 RESERVED 票据；
+        // 缓存已热时 Lua 不会读取兜底库存参数，跳过 COUNT(*) 可显著降低秒杀热路径的数据库压力。
+        int remaining = 0;
+        if (!stockGateway.hasAllocationStock(inventoryId)) {
+            Long inFlight = requestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
+                    .eq(ClaimTicket::getInventoryId, inventoryId)
+                    .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
+            remaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount()
+                    - (inFlight == null ? 0 : inFlight.intValue()));
+        }
         long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
         StockDecision decision = stockGateway.tryAcquireAllocation(inventoryId, template.getId(), userId,
                 allocation.getMaxClaimsPerUser(), templateLimit, remaining, ttl, requestRowId);

@@ -692,13 +692,16 @@ public class CampaignFlowService {
             recordConversion("claim:" + voucherId, "CLAIM", intent.getActivityId(),
                     intent.getChannelId(), intent.getVisitId(), intent.getUserId(), voucherId, null, LocalDateTime.now(clock));
         });
-        pageCache.evict(intent.getActivityId());
+        // 活动页快照仅缓存静态元数据，实时库存余量由 readLiveRemaining() 直接从 Redis 读取；
+        // 领券热路径不再驱逐活动页缓存，避免秒杀高峰反复击穿缓存回源查库。
     }
 
     private PreparedClaim prepareClaim(long userId, long activityId, long templateId, String requestId, String credential) {
+        // 第一层限流放在任何数据库读写之前，先以单用户频控拦截恶意脚本，避免压垮 MySQL。
+        rateLimits.admitUser(activityId, userId);
         CampaignVisit visit = requireVisit(activityId, credential, userId);
-        // 限流放在活动、渠道、投放等查询和领取意向写入之前，超额请求不再打到数据库。
-        rateLimits.admit(activityId, visit.getChannelId(), userId);
+        // 拿到来源渠道后再校验活动总额度与来源额度（不重复计数单用户桶）。
+        rateLimits.admitActivityAndSource(activityId, visit.getChannelId());
         CampaignActivity activity = campaignService.requireReadable(activityId);
         ActivityPhase phase = campaignService.phase(activity);
         if (!phase.claimOpen()) {
@@ -737,7 +740,7 @@ public class CampaignFlowService {
             recordConversion("claim:" + voucherId, "CLAIM", activityId, visit.getChannelId(), visit.getId(),
                     userId, voucherId, null, LocalDateTime.now(clock));
         });
-        pageCache.evict(activityId);
+        // 实时库存通过 Redis readLiveRemaining() 动态展示，领券成功不驱逐活动页静态快照。
     }
 
     private static Map<String, Object> ticketView(VoucherClaimService.ClaimReceipt ticket) {

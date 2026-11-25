@@ -181,6 +181,11 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
         allocations.remove(inventoryId);
     }
 
+    @Override
+    public synchronized boolean hasAllocationStock(long inventoryId) {
+        return allocations.containsKey(inventoryId);
+    }
+
     private int templateCount(long templateId, long userId) {
         return templateUsers.getOrDefault(templateId, Map.of()).getOrDefault(userId, 0);
     }

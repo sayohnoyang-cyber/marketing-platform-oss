@@ -35,4 +35,11 @@ public interface OfferStockGateway {
     void decreaseAllocationIfPresent(long inventoryId, int delta);
 
     void deleteAllocation(long inventoryId);
+
+    /**
+     * 判断投放库存缓存键是否已初始化；缓存已预热时可跳过昂贵的在途票据 COUNT(*) 兜底查询。
+     */
+    default boolean hasAllocationStock(long inventoryId) {
+        return false;
+    }
 }

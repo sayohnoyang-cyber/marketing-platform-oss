@@ -29,6 +29,7 @@ public class CampaignRateLimitService {
     private final CampaignService campaigns;
     private final Clock clock;
     private final DefaultRedisScript<Long> script;
+    private final DefaultRedisScript<Long> userScript;
     private final Map<Long, Decision> decisions = new ConcurrentHashMap<>();
 
     public CampaignRateLimitService(CampaignOperationMapper mapper, CampaignOperationStore store, CampaignConfigurationService configuration,
@@ -36,6 +37,7 @@ public class CampaignRateLimitService {
         this.mapper = mapper; this.store = store; this.configuration = configuration; this.capacity = capacity;
         this.redis = redis; this.properties = properties; this.campaigns = campaigns; this.clock = clock;
         this.script = new DefaultRedisScript<>(); script.setLocation(new ClassPathResource("lua/activity_rate_limit.lua")); script.setResultType(Long.class);
+        this.userScript = new DefaultRedisScript<>(); userScript.setLocation(new ClassPathResource("lua/activity_user_rate_limit.lua")); userScript.setResultType(Long.class);
     }
 
     @Transactional
@@ -102,10 +104,45 @@ public class CampaignRateLimitService {
     }
 
     /**
+     * 前置单用户频控：在查询访问凭证等任何数据库操作之前执行，优先拦住刷子流量，避免打穿 MySQL。
+     */
+    public void admitUser(long activityId, Long userId) {
+        int perUserQps = userId == null ? 0 : Math.max(0, properties.getCapacity().getPerUserClaimQps());
+        if (perUserQps <= 0) {
+            return;
+        }
+        var template = redis.getIfAvailable();
+        if (template == null) {
+            return;
+        }
+        String userKey = "campaign:rate:{" + activityId + "}:user:" + userId;
+        Long admitted;
+        try {
+            admitted = template.execute(userScript, List.of(userKey), String.valueOf(perUserQps));
+        } catch (RuntimeException exception) {
+            throw new BizException(ErrorCode.CONFLICT, "限流服务暂不可用，请稍后重试");
+        }
+        if (!Long.valueOf(1).equals(admitted)) {
+            throw new BizException(ErrorCode.RATE_LIMITED, "当前入口访问较多，请稍后重试");
+        }
+    }
+
+    /**
+     * 活动总额度与来源额度限流（不含单用户频控，供前置 admitUser 之后调用，避免单用户桶被重复计数）。
+     */
+    public void admitActivityAndSource(long activityId, Long channelId) {
+        admitInternal(activityId, channelId, null, false);
+    }
+
+    /**
      * 领券入口限流，应在任何数据库写入之前调用。
      * 先检查单用户频控，再原子检查活动总额度与来源额度；策略失效时回落到默认保护额度。
      */
     public void admit(long activityId, Long channelId, Long userId) {
+        admitInternal(activityId, channelId, userId, true);
+    }
+
+    private void admitInternal(long activityId, Long channelId, Long userId, boolean checkPerUser) {
         Decision decision = decision(activityId);
         if (decision.totalQps() <= 0) return;
         var template = redis.getIfAvailable();
@@ -117,7 +154,7 @@ public class CampaignRateLimitService {
         String source = channelId == null ? "direct" : channelId.toString();
         String prefix = "campaign:rate:{" + activityId + "}:" + (decision.fallback() ? "default" : decision.policyId());
         int sourceQps = decision.fallback() ? decision.totalQps() : decision.sources().getOrDefault(source, 1);
-        int perUserQps = userId == null ? 0 : Math.max(0, properties.getCapacity().getPerUserClaimQps());
+        int perUserQps = (!checkPerUser || userId == null) ? 0 : Math.max(0, properties.getCapacity().getPerUserClaimQps());
         String userKey = "campaign:rate:{" + activityId + "}:user:" + (userId == null ? "anon" : userId);
         Long admitted;
         try {
