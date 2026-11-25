@@ -9,13 +9,10 @@
 | `/overview` | 营销总览。主按钮按当前活动进入选券、预热、开场或复盘 |
 | `/activities` | 活动列表，可按状态筛选、复制 |
 | `/activities/new` | 创建活动 |
-| `/activities/:activityId/info` | 基本信息 |
-| `/activities/:activityId/pick` | 选券和投放 |
-| `/activities/:activityId/link` | 主链和渠道 |
-| `/activities/:activityId/forecast` | 预测占位，不写演示 QPS |
-| `/activities/:activityId/prepare` | 发布检查 |
-| `/activities/:activityId/live` | 开场 |
-| `/activities/:activityId/review` | 复盘 |
+| `/activities/:activityId/setup` | 活动配置（合并基本信息与选券投放；兼容旧路由 `/info`、`/pick`） |
+| `/activities/:activityId/promote` | 推广入口（活动直达链接默认可用，推广主短链与渠道按需生成；兼容 `/link`） |
+| `/activities/:activityId/analytics` | 实时与复盘（合并开场看板与五级转化漏斗复盘；兼容 `/live`、`/review`） |
+| `/activities/:activityId/guard` | 高级保障（收拢压力预测限流、开场预热与消息状态；兼容 `/forecast`、`/prepare`） |
 | `/links` | 活动入口和普通短链 |
 | `/coupons` | 券库 |
 | `/preview` | 后台预览，不写真实访问 |
@@ -45,7 +42,8 @@
 - `claims`：归因成功记录合计，包含直接访问。
 - 渠道表单独列出“直接访问”。未知渠道参数拒绝进入，不记成别的渠道。
 - 退款金额目前没有采集，接口返回 null，页面写“未采集”。
-- 核销率分子是核销笔数，分母是本场已领张数。
+- 核销率分子是当前已核销（未退款）的去重券数，分母是本场已领张数（严格不超过 100%）。
+- 短链管理列表区分“短链点击”（302 跳转去重）与“落地页到达”（活动入口去重），普通短链仅统计跳转点击。
 
 ## 本次没有新增迁移
 
