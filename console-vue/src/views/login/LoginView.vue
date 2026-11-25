@@ -78,6 +78,7 @@
           <span>{{ mode === 'login' ? '还没有账号？' : '已有账号？' }}</span>
           <button type="button" :disabled="loading" @click="toggle">{{ mode === 'login' ? '创建账号' : '返回登录' }}</button>
         </div>
+        <div class="login-icp"><IcpFooter /></div>
       </div>
     </section>
 
@@ -87,6 +88,7 @@
 
 <script>
 import { login, register } from '@/api/identity'
+import IcpFooter from '@/components/IcpFooter.vue'
 import { safeReturn } from './returnTo'
 
 const USERNAME_KEY = 'marketing.username'
@@ -101,6 +103,7 @@ const PERIOD = 3.4
 const BURST_SPEED = 260
 
 export default {
+  components: { IcpFooter },
   data() {
     return {
       mode: 'login',
@@ -436,6 +439,7 @@ export default {
 .switch { margin-top: 24px; text-align: center; color: var(--muted); font-size: 13px; }
 .switch button { padding: 4px; color: var(--clay); font-size: 13px; font-weight: 500; }
 .switch button:hover:not(:disabled) { color: var(--clayd); text-decoration: underline; text-underline-offset: 4px; }
+.login-icp { margin-top: 22px; text-align: center; }
 
 .bridge { position: fixed; inset: 0; z-index: 4; width: 100vw; height: 100vh; pointer-events: none; }
 .bridge :deep(.track) { fill: none; stroke: #c6613f; stroke-opacity: .14; stroke-width: 6; stroke-linecap: round; }

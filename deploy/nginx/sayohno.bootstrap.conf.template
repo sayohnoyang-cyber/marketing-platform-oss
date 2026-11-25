@@ -1,0 +1,14 @@
+# HTTP only, until Let's Encrypt certificates exist.
+# ACME http-01 is served here; every host still gets the current site.
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location ^~ /.well-known/acme-challenge/ {
+        default_type text/plain;
+        root /var/www/certbot;
+        try_files $uri =404;
+    }
+
+__SERVER_BODY__
+}

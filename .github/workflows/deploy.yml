@@ -44,7 +44,8 @@ jobs:
       - name: Build frontend
         working-directory: console-vue
         env:
-          VITE_PUBLIC_SHORTLINK_ORIGIN: http://${{ secrets.DEPLOY_HOST }}
+          # 短链展示用规范域名。证书启用前，HTTP 直连 IP 仍然可用。
+          VITE_PUBLIC_SHORTLINK_ORIGIN: https://sayohno.cn
         run: |
           npm ci
           npm run build
@@ -58,6 +59,7 @@ jobs:
           cp marketing-app/src/main/resources/db/V*.sql bundle/db/
           cp deploy/remote-deploy.sh bundle/remote-deploy.sh
           cp deploy/redis-cutover.sh bundle/redis-cutover.sh
+          cp -r deploy/nginx bundle/nginx
           echo "${GITHUB_SHA}" > bundle/sha
 
       - name: Configure SSH
@@ -92,6 +94,7 @@ jobs:
         run: |
           host=${{ secrets.DEPLOY_HOST }}
           for i in $(seq 1 12); do
+            # 裸 IP 的 HTTP 保持可访问，证书启用前后这步都成立。
             page=$(curl -fsS --max-time 10 "http://$host/" || true)
             api=$(curl -fsS --max-time 10 "http://$host/api/health" || true)
             if echo "$page" | grep -q '<div id="app"' && echo "$api" | grep -q '"UP"'; then
