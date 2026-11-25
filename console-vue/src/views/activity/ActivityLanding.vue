@@ -9,6 +9,7 @@
         <router-link v-if="token" class="linkbtn landing-refresh" :to="{ path: '/my-coupons', query: { return: $route.fullPath } }">查看我的优惠券</router-link>
       </CouponPhone>
     </template>
+    <div class="landing-icp"><IcpFooter /></div>
   </div>
 </template>
 
@@ -17,10 +18,11 @@ import http from '@/api/http'
 import { requestId } from '@/lib/requestId.mjs'
 import { personalState, refreshDelay } from './landingState.mjs'
 import CouponPhone from './CouponPhone.vue'
+import IcpFooter from '@/components/IcpFooter.vue'
 import { couponFace, couponRuleText, clockLabel, phaseText } from './format'
 
 export default {
-  components: { CouponPhone },
+  components: { CouponPhone, IcpFooter },
   data() { return { entry: null, loading: false, acting: false, error: '', message: '', reserved: false, claimed: 0, claimRequestId: '', requestToken: 0, refreshTimer: null } },
   computed: {
     token() { return this.$store.state.token },
@@ -138,5 +140,6 @@ export default {
 .landing { min-height: 100vh; background: var(--bg); padding: 40px 16px; display: flex; flex-direction: column; align-items: center; }
 .landing-source { color: var(--muted); font-size: 12px; text-align: center; margin: 22px 0 10px; }
 .landing-refresh { display: block; margin: 12px auto 0; }
+.landing-icp { margin-top: 28px; }
 @media (max-width: 480px) { .landing { padding: 20px 12px; } }
 </style>

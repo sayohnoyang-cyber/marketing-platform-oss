@@ -45,17 +45,19 @@
           工作空间 <span class="crumb-gap">/</span><strong :title="crumb">{{ crumb }}</strong>
         </div>
       </header>
-      <div class="content"><router-view @spotlight="spotlight = $event" /><footer class="footer"><span>序 · 营销工作台</span></footer></div>
+      <div class="content"><router-view @spotlight="spotlight = $event" /><footer class="footer"><span>序 · 营销工作台</span><IcpFooter /></footer></div>
     </main>
   </div>
 </template>
 
 <script>
 import { getActivity } from '@/api/campaign'
+import IcpFooter from '@/components/IcpFooter.vue'
 import { activitySpotlight } from '@/api/link'
 import { leftOf, phaseText, activityPath, displayPhase } from '@/views/activity/format'
 
 export default {
+  components: { IcpFooter },
   data() {
     return { open: false, menu: false, spotlight: null, sideToken: 0 }
   },

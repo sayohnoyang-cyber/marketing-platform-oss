@@ -93,8 +93,8 @@ async function landingHarness(post, storage = new Map(), get = async () => ({ da
   const text = await readFile(new URL('../src/views/activity/ActivityLanding.vue', import.meta.url), 'utf8')
   const script = text.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '').replace('export default', 'return')
   const storageApi = { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) }
-  const options = Function('http', 'requestId', 'personalState', 'refreshDelay', 'CouponPhone', 'couponFace', 'couponRuleText', 'clockLabel', 'phaseText', 'sessionStorage', 'document', script)(
-    { post, get }, requestId, personalState, refreshDelay, {}, () => '', () => '', () => '', () => '', storageApi, { hidden: true })
+  const options = Function('http', 'requestId', 'personalState', 'refreshDelay', 'CouponPhone', 'IcpFooter', 'couponFace', 'couponRuleText', 'clockLabel', 'phaseText', 'sessionStorage', 'document', script)(
+    { post, get }, requestId, personalState, refreshDelay, {}, {}, () => '', () => '', () => '', () => '', storageApi, { hidden: true })
   const vm = { ...options.data(), $store: { state: { token: 'test', profile: { userId: '9' } } }, $route: { params: { id: '1' }, query: {}, fullPath: '/a/1' } }
   for (const [key, value] of Object.entries(options.methods)) vm[key] = value.bind(vm)
   for (const [key, value] of Object.entries(options.computed)) Object.defineProperty(vm, key, { get: () => value.call(vm) })
