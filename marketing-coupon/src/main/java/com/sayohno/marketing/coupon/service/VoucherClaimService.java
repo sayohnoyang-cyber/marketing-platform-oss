@@ -137,9 +137,15 @@ public class VoucherClaimService {
     }
 
     /**
-     * 消费异步领券事件，完成数据库落库与释放 Redis hold；失败时补偿 Redis 库存并标记 FAILED。
+     * 消费异步领券事件，完成数据库落库与释放 Redis hold。
+     * 严禁在外层事务中调用：必须保证 commit() 独立事务已提交后再释放 Redis 预扣标记；
+     * 终态业务失败（VALIDATION/NOT_FOUND）立即回补 Redis 库存并标记 FAILED，
+     * 瞬时基础设施异常（DB 连接超时、死锁等）直接向上抛出交由 Outbox/MQ 重试。
      */
     public void completeAsyncClaim(long requestRowId, String token) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("异步领券落库不能在外层事务中调用");
+        }
         ClaimTicket current = requestMapper.selectById(requestRowId);
         if (current == null || current.getStatus() == ClaimTicketStatus.SUCCEEDED || current.getStatus() == ClaimTicketStatus.FAILED) {
             return;
@@ -182,9 +188,14 @@ public class VoucherClaimService {
             IssuerScope source = current.getIssuerScope() == null ? IssuerScope.MERCHANT : current.getIssuerScope();
             commit(requestRowId, current.getUserId(), template, source, templateCount);
             stockGateway.releaseAllocationHold(current.getInventoryId(), requestRowId);
-        } catch (RuntimeException exception) {
-            compensateAllocationAndFail(requestRowId, current.getInventoryId(), template.getId(),
-                    current.getUserId(), templateCount, allocCount, activeToken);
+        } catch (BizException bizException) {
+            // 仅对明确不可恢复的业务终态（超限、库存不足、投放关闭）回补 Redis 并标 FAILED；冲突类异常保留重试机会。
+            if (bizException.getErrorCode() == ErrorCode.VALIDATION || bizException.getErrorCode() == ErrorCode.NOT_FOUND) {
+                compensateAllocationAndFail(requestRowId, current.getInventoryId(), template.getId(),
+                        current.getUserId(), templateCount, allocCount, activeToken);
+                return;
+            }
+            throw bizException;
         }
     }
 
