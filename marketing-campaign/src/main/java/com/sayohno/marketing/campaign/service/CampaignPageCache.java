@@ -157,6 +157,7 @@ public class CampaignPageCache {
             long activityId,
             long merchantId,
             String name,
+            String activityType,
             int status,
             int version,
             LocalDateTime warmupStartTime,

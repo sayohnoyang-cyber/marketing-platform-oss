@@ -9,7 +9,10 @@ import com.sayohno.marketing.campaign.service.CampaignFlowService;
 import com.sayohno.marketing.campaign.service.CampaignOperationStore;
 import com.sayohno.marketing.campaign.service.CampaignPreparationService;
 import com.sayohno.marketing.campaign.service.CampaignService;
+import com.sayohno.marketing.campaign.service.CapacityBaselineService;
 import com.sayohno.marketing.campaign.service.DataRetentionService;
+import com.sayohno.marketing.campaign.web.dto.CapacityRequest;
+import com.sayohno.marketing.common.config.MarketingProperties;
 import com.sayohno.marketing.common.context.CurrentUser;
 import com.sayohno.marketing.common.context.UserContext;
 import com.sayohno.marketing.common.context.UserRole;
@@ -61,6 +64,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class ActivityFlowTest {
     @Autowired
     private CampaignService campaignService;
+    @Autowired
+    private CapacityBaselineService capacityBaselineService;
+    @Autowired
+    private MarketingProperties marketingProperties;
     @Autowired
     private CampaignFlowService flowService;
     @Autowired
@@ -676,6 +683,72 @@ class ActivityFlowTest {
         Map<String, Object> funnel = (Map<String, Object>) review.get("funnel");
         assertEquals(2L, ((Number) funnel.get("redeems")).longValue());
         assertEquals(1L, ((Number) funnel.get("netRedeemed")).longValue());
+    }
+
+    @Test
+    void deleteDraftReturnsAllocatedInventoryAndRejectsPublished() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "草稿删除退库券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3), "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"3.00\"}");
+
+        var draft = campaignService.create("待删除草稿", now.plusHours(1), now.plusHours(2), now.plusDays(1));
+        flowService.saveOffer(draft.getId(), template.getId(), 4, 1, "draft-del-offer", new BigDecimal("20.00"), null);
+        flowService.addChannel(draft.getId(), "公众号", "draft-del-ch", "wxdel");
+        assertEquals(6, templateService.requireOwned(template.getId()).getInventoryQty());
+
+        flowService.deleteDraft(draft.getId());
+        assertEquals(10, templateService.requireOwned(template.getId()).getInventoryQty());
+        assertThrows(BizException.class, () -> campaignService.requireOwned(draft.getId()));
+
+        var published = campaignService.create("已发布不可删", now.minusHours(1), now.plusHours(1), now.plusDays(1));
+        flowService.saveOffer(published.getId(), template.getId(), 2, 1, "pub-keep-offer", new BigDecimal("20.00"), null);
+        campaignService.publish(published.getId());
+        assertThrows(BizException.class, () -> flowService.deleteDraft(published.getId()));
+    }
+
+    @Test
+    void publicVisitIncludesActivityTypeAndCapacityRiskTriggersOnlyWhenNeeded() {
+        Shop shop = shop();
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        OfferPlan template = templateService.create(shop.storeCode(), "风险按需检查券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
+                now.minusDays(1), now.plusDays(3), "{\"maxClaimsPerUser\":1}", "{\"capAmount\":\"2.00\"}");
+
+        var draft = campaignService.create("仅草稿", now.plusHours(1), now.plusHours(2), now.plusDays(1), "新客领取活动", new BigDecimal("50.00"));
+        assertEquals(0, campaignService.checks(draft.getId()).stream().filter(c -> "capacity".equals(c.get("code")) || "reservations".equals(c.get("code"))).count());
+
+        flowService.saveOffer(draft.getId(), template.getId(), 5, 1, "risk-offer", new BigDecimal("50.00"), null);
+        campaignService.publish(draft.getId());
+        // 预热期尚无预约：仅提示暂无预约，不误报容量风险
+        var beforeReserveChecks = campaignService.checks(draft.getId());
+        assertEquals(1, beforeReserveChecks.stream().filter(c -> "reservations".equals(c.get("code"))).count());
+        assertEquals(0, beforeReserveChecks.stream().filter(c -> "capacity".equals(c.get("code"))).count());
+
+        // 用户访问并预约后，透出 activityType，且触发容量基线提示（blocking=false, passed=false）
+        Map<String, Object> visit = flowService.visit(draft.getId(), null, "risk-visitor-1");
+        assertEquals("新客领取活动", visit.get("activityType"));
+        flowService.reserve(980L, draft.getId(), String.valueOf(visit.get("credential")));
+
+        var afterReserveChecks = campaignService.checks(draft.getId());
+        var capRisk = afterReserveChecks.stream().filter(c -> "capacity".equals(c.get("code"))).findFirst().orElseThrow();
+        assertEquals(false, capRisk.get("passed"));
+        assertEquals(false, capRisk.get("blocking"));
+
+        // 录入当前部署有效压测基线后，容量提示消除
+        capacityBaselineService.create(new CapacityRequest(
+                marketingProperties.getCapacity().getDeploymentId(),
+                "压测报告-01",
+                500,
+                30,
+                80,
+                BigDecimal.ZERO,
+                60,
+                30000,
+                now.minusMinutes(5),
+                now.plusDays(3)));
+        assertEquals(0, campaignService.checks(draft.getId()).stream().filter(c -> "capacity".equals(c.get("code"))).count());
     }
 
     private Shop shop() {

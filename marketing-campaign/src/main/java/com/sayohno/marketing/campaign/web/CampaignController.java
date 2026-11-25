@@ -12,6 +12,7 @@ import com.sayohno.marketing.campaign.web.dto.PlaceRequest;
 import com.sayohno.marketing.common.result.Result;
 import com.sayohno.marketing.common.result.Results;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -66,6 +67,12 @@ public class CampaignController {
     public Result<?> update(@PathVariable long id, @Valid @RequestBody ActivityRequest request) {
         return Results.success(campaignService.update(id, request.getName(), request.getWarmupStartTime(),
                 request.getStartTime(), request.getEndTime(), request.getVersion(), request.getActivityType(), request.getBudgetAmount()));
+    }
+
+    @DeleteMapping("/{id}")
+    public Result<Void> delete(@PathVariable long id) {
+        flowService.deleteDraft(id);
+        return Results.success();
     }
 
     @PostMapping("/{id}/copy")

@@ -8,10 +8,15 @@ import com.sayohno.marketing.coupon.web.dto.OrderVoucherRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
+
+import com.sayohno.marketing.common.context.UserContext;
+import com.sayohno.marketing.common.exception.BizException;
+import com.sayohno.marketing.common.result.ErrorCode;
 
 import java.util.LinkedHashMap;
 
@@ -24,6 +29,18 @@ public class VoucherManagementController {
     public VoucherManagementController(VoucherWalletService wallet, VoucherRedemptionService settlements) {
         this.wallet = wallet;
         this.settlements = settlements;
+    }
+
+    @GetMapping("/redemptions")
+    public Result<?> redemptions(@RequestParam(required = false) String keyword,
+                                 @RequestParam(required = false) String status,
+                                 @RequestParam(defaultValue = "1") long page,
+                                 @RequestParam(defaultValue = "20") long size) {
+        var current = UserContext.require();
+        if (!current.hasMerchantAccess()) {
+            throw new BizException(ErrorCode.FORBIDDEN, "需要工作空间管理权限");
+        }
+        return Results.success(settlements.merchantHistory(current.getMerchantId(), keyword, status, page, size));
     }
 
     @GetMapping("/{id}")

@@ -18,6 +18,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 @Service
 public class VoucherRedemptionService {
@@ -262,6 +266,58 @@ public class VoucherRedemptionService {
         return settlementMapper.selectList(Wrappers.<VoucherRedemption>lambdaQuery()
                 .eq(VoucherRedemption::getUserId, userId).eq(VoucherRedemption::getVoucherId, couponId)
                 .orderByDesc(VoucherRedemption::getId).last("LIMIT 50"));
+    }
+
+    public Map<String, Object> merchantHistory(long merchantId, String keyword, String status, long page, long size) {
+        long safePage = Math.max(1L, page);
+        long safeSize = Math.min(100L, Math.max(1L, size));
+        long offset = (safePage - 1L) * safeSize;
+        String trimmedKeyword = keyword == null ? "" : keyword.trim();
+        String orderLike = trimmedKeyword.isEmpty() ? null : "%" + trimmedKeyword + "%";
+        Long voucherId = null;
+        if (!trimmedKeyword.isEmpty() && trimmedKeyword.matches("\\d{1,19}")) {
+            try {
+                voucherId = Long.parseLong(trimmedKeyword);
+            } catch (NumberFormatException ignored) {
+                voucherId = null;
+            }
+        }
+        String safeStatus = null;
+        if (status != null && !status.isBlank() && !"ALL".equalsIgnoreCase(status.trim())) {
+            safeStatus = RedemptionStatus.fromCode(status.trim()).getCode();
+        }
+        List<Map<String, Object>> records = settlementMapper
+                .selectMerchantRedemptions(merchantId, orderLike, voucherId, safeStatus, offset, safeSize)
+                .stream().map(VoucherRedemptionService::normalizeMerchantRedemption).toList();
+        long total = settlementMapper.countMerchantRedemptions(merchantId, orderLike, voucherId, safeStatus);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("records", records);
+        result.put("total", total);
+        result.put("page", safePage);
+        result.put("size", safeSize);
+        return result;
+    }
+
+    private static Map<String, Object> normalizeMerchantRedemption(Map<String, Object> raw) {
+        Map<String, Object> lower = new LinkedHashMap<>();
+        raw.forEach((k, v) -> lower.put(k.toLowerCase(Locale.ROOT), v));
+        Map<String, Object> row = new LinkedHashMap<>();
+        Object id = lower.get("id");
+        Object voucherId = lower.get("voucherid");
+        row.put("id", id == null ? null : String.valueOf(id));
+        row.put("voucherId", voucherId == null ? null : String.valueOf(voucherId));
+        row.put("orderNo", lower.get("orderno"));
+        row.put("orderAmount", lower.get("orderamount"));
+        row.put("discountAmount", lower.get("discountamount"));
+        row.put("refundAmount", lower.get("refundamount"));
+        row.put("refundedAt", lower.get("refundedat"));
+        row.put("status", lower.get("status"));
+        row.put("createTime", lower.get("createtime"));
+        row.put("updateTime", lower.get("updatetime"));
+        row.put("couponTitle", lower.get("coupontitle"));
+        row.put("benefitPolicy", lower.get("benefitpolicy"));
+        row.put("voucherStatus", lower.get("voucherstatus"));
+        return row;
     }
 
     private void validateMoney(BigDecimal amount, boolean allowZero, String label) {

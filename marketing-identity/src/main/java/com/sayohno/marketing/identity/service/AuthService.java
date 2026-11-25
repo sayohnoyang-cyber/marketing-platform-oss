@@ -19,6 +19,7 @@ import com.sayohno.marketing.identity.dao.mapper.IamUserMapper;
 import com.sayohno.marketing.identity.session.SessionStore;
 import com.sayohno.marketing.identity.session.UserSession;
 import com.sayohno.marketing.identity.web.dto.AddMemberRequest;
+import com.sayohno.marketing.identity.web.dto.ChangePasswordRequest;
 import com.sayohno.marketing.identity.web.dto.CreateShopRequest;
 import com.sayohno.marketing.identity.web.dto.LoginRequest;
 import com.sayohno.marketing.identity.web.dto.LoginResponse;
@@ -132,6 +133,24 @@ public class AuthService {
         if (token != null) {
             sessionStore.delete(token);
         }
+    }
+
+    @Transactional
+    public void changePassword(ChangePasswordRequest request) {
+        CurrentUser current = UserContext.require();
+        IamUser user = userMapper.selectById(current.getUserId());
+        if (user == null || user.getStatus() == null || user.getStatus() != IamStatus.ENABLED) {
+            throw new BizException(ErrorCode.UNAUTHORIZED, "账号不可用");
+        }
+        if (!passwordEncoder.matches(request.getOldPassword(), user.getPasswordHash())) {
+            throw new BizException(ErrorCode.VALIDATION, "当前密码不正确");
+        }
+        if (passwordEncoder.matches(request.getNewPassword(), user.getPasswordHash())) {
+            throw new BizException(ErrorCode.VALIDATION, "新密码不能与当前密码相同");
+        }
+        userMapper.update(null, Wrappers.<IamUser>lambdaUpdate()
+                .eq(IamUser::getId, user.getId())
+                .set(IamUser::getPasswordHash, passwordEncoder.encode(request.getNewPassword())));
     }
 
     public ProfileView profile() {

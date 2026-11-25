@@ -3,6 +3,7 @@ package com.sayohno.marketing.identity.web;
 import com.sayohno.marketing.common.result.Result;
 import com.sayohno.marketing.common.result.Results;
 import com.sayohno.marketing.identity.service.AuthService;
+import com.sayohno.marketing.identity.web.dto.ChangePasswordRequest;
 import com.sayohno.marketing.identity.web.dto.LoginRequest;
 import com.sayohno.marketing.identity.web.dto.LoginResponse;
 import com.sayohno.marketing.identity.web.dto.ProfileView;
@@ -45,6 +46,12 @@ public class IdentityController {
     @GetMapping("/me")
     public Result<ProfileView> me() {
         return Results.success(authService.profile());
+    }
+
+    @PostMapping("/password")
+    public Result<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request) {
+        authService.changePassword(request);
+        return Results.success();
     }
 
     @PostMapping("/switch-merchant")

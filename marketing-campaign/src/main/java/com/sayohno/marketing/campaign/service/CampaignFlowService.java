@@ -14,6 +14,7 @@ import com.sayohno.marketing.campaign.dao.mapper.CampaignChannelMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignClaimIntentMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignConversionMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignOfferMapper;
+import com.sayohno.marketing.campaign.dao.mapper.CampaignOperationMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignReservationMapper;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignVisitMapper;
 import com.sayohno.marketing.common.config.MarketingProperties;
@@ -34,6 +35,7 @@ import com.sayohno.marketing.shortlink.dao.entity.LinkGroup;
 import com.sayohno.marketing.shortlink.dao.mapper.LinkAccessLogMapper;
 import com.sayohno.marketing.shortlink.service.LinkDirectoryService;
 import com.sayohno.marketing.shortlink.service.PublicLinkAddress;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -73,6 +75,7 @@ public class CampaignFlowService {
     private final CampaignRateLimitService rateLimits;
     private final CampaignPageCache pageCache;
     private final TransactionTemplate transactionTemplate;
+    private final CampaignOperationMapper operationMapper;
 
     public CampaignFlowService(CampaignService campaignService,
                                CampaignChannelMapper channelMapper,
@@ -90,6 +93,30 @@ public class CampaignFlowService {
                                OutboxStore outboxStore,
                                Clock clock, OfferPlanService templateService, CampaignRateLimitService rateLimits, CampaignPageCache pageCache,
                                PlatformTransactionManager transactionManager) {
+        this(campaignService, channelMapper, visitMapper, reservationMapper, couponMapper, intentMapper,
+                conversionMapper, linkDirectoryService, linkAccessLogMapper, claimService, allocationService,
+                merchantAccessService, properties, outboxStore, clock, templateService, rateLimits, pageCache,
+                transactionManager, null);
+    }
+
+    @Autowired
+    public CampaignFlowService(CampaignService campaignService,
+                               CampaignChannelMapper channelMapper,
+                               CampaignVisitMapper visitMapper,
+                               CampaignReservationMapper reservationMapper,
+                               CampaignOfferMapper couponMapper,
+                               CampaignClaimIntentMapper intentMapper,
+                               CampaignConversionMapper conversionMapper,
+                               LinkDirectoryService linkDirectoryService,
+                               LinkAccessLogMapper linkAccessLogMapper,
+                               VoucherClaimService claimService,
+                               OfferInventoryService allocationService,
+                               MerchantAccessService merchantAccessService,
+                               MarketingProperties properties,
+                               OutboxStore outboxStore,
+                               Clock clock, OfferPlanService templateService, CampaignRateLimitService rateLimits, CampaignPageCache pageCache,
+                               PlatformTransactionManager transactionManager,
+                               CampaignOperationMapper operationMapper) {
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.campaignService = campaignService;
         this.channelMapper = channelMapper;
@@ -109,6 +136,7 @@ public class CampaignFlowService {
         this.templateService = templateService;
         this.rateLimits = rateLimits;
         this.pageCache = pageCache;
+        this.operationMapper = operationMapper;
     }
 
     @Transactional
@@ -297,7 +325,7 @@ public class CampaignFlowService {
                     ch.getId(), ch.getChannelCode(), ch.getName(), ch.getStatus() == null ? 0 : ch.getStatus()));
         }
         return new CampaignPageCache.PageSnapshot(
-                activity.getId(), activity.getMerchantId(), activity.getName(),
+                activity.getId(), activity.getMerchantId(), activity.getName(), activity.getActivityType(),
                 activity.getStatus(), activity.getVersion(),
                 activity.getWarmupStartTime(), activity.getStartTime(), activity.getEndTime(),
                 activity.getMainLinkId(), activity.getMainEnabled(), linkEnableStatus,
@@ -345,6 +373,7 @@ public class CampaignFlowService {
             return body;
         }
         body.put("name", snapshot.name());
+        body.put("activityType", snapshot.activityType() == null ? "优惠券推广活动" : snapshot.activityType());
         body.put("startTime", snapshot.startTime().toString());
         body.put("endTime", snapshot.endTime().toString());
         if (snapshot.planId() != null) {
@@ -1092,6 +1121,31 @@ public class CampaignFlowService {
             return allocation.getClaimedCount() < allocation.getQuantity() ? "CLAIM" : "SOLD_OUT";
         }
         return "UNAVAILABLE";
+    }
+
+    @Transactional
+    public void deleteDraft(long activityId) {
+        CampaignActivity activity = campaignService.requireOwned(activityId);
+        if (activity.getStatus() == null || activity.getStatus() != ActivityStatuses.DRAFT) {
+            throw new BizException(ErrorCode.CONFLICT, "只有草稿状态的活动可以删除");
+        }
+        List<CampaignOffer> offers = couponMapper.selectList(Wrappers.<CampaignOffer>lambdaQuery()
+                .eq(CampaignOffer::getActivityId, activityId));
+        for (CampaignOffer offer : offers) {
+            if (offer.getInventoryId() != null) {
+                allocationService.freeze(offer.getInventoryId());
+            }
+        }
+        couponMapper.delete(Wrappers.<CampaignOffer>lambdaQuery().eq(CampaignOffer::getActivityId, activityId));
+        channelMapper.delete(Wrappers.<CampaignChannel>lambdaQuery().eq(CampaignChannel::getActivityId, activityId));
+        if (operationMapper != null) {
+            operationMapper.delete(Wrappers.<com.sayohno.marketing.campaign.dao.entity.CampaignOperation>lambdaQuery()
+                    .eq(com.sayohno.marketing.campaign.dao.entity.CampaignOperation::getActivityId, activityId));
+        }
+        if (activity.getMainLinkId() != null) {
+            linkDirectoryService.updateManagedLink(activity.getMainLinkId(), null, null, 1);
+        }
+        campaignService.deleteRecordAndEvict(activityId);
     }
 
     private static String randomCode(int size) {

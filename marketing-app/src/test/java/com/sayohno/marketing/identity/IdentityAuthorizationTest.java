@@ -119,6 +119,42 @@ class IdentityAuthorizationTest {
         assertNull(UserContext.get());
     }
 
+    @Test
+    void userCanChangePasswordWithCurrentPasswordVerification() throws Exception {
+        String username = "pwd_" + UUID.randomUUID().toString().substring(0, 8);
+        Login account = register(username, "WORKSPACE", null);
+
+        mockMvc.perform(post("/api/identity/password")
+                        .header("Authorization", "Bearer " + account.token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"oldPassword\":\"wrongPass1\",\"newPassword\":\"newPassword123\"}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/identity/password")
+                        .header("Authorization", "Bearer " + account.token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"oldPassword\":\"password123\",\"newPassword\":\"password123\"}"))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(post("/api/identity/password")
+                        .header("Authorization", "Bearer " + account.token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"oldPassword\":\"password123\",\"newPassword\":\"newPassword123\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value("0"));
+
+        mockMvc.perform(post("/api/identity/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"password123\"}"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(post("/api/identity/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"newPassword123\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.token").isNotEmpty());
+    }
+
     private Login register(String username, String type, String merchantName) throws Exception {
         String body = merchantName == null
                 ? "{\"username\":\"" + username + "\",\"password\":\"password123\",\"registerType\":\"" + type + "\"}"

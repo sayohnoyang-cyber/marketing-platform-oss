@@ -68,6 +68,14 @@ public class CapacityBaselineService {
                 && row.getExpiresAt().isAfter(LocalDateTime.now(clock));
     }
 
+    public boolean hasUsableBaseline(long merchantId) {
+        Long count = mapper.selectCount(Wrappers.<CapacityBaseline>lambdaQuery()
+                .eq(CapacityBaseline::getMerchantId, merchantId)
+                .eq(CapacityBaseline::getDeploymentId, properties.getCapacity().getDeploymentId())
+                .gt(CapacityBaseline::getExpiresAt, LocalDateTime.now(clock)));
+        return count != null && count > 0;
+    }
+
     public int safeQps(CapacityBaseline row) { return Math.max(1, (int) Math.floor(row.getSustainedQps() * .8)); }
 
     private Map<String, Object> present(CapacityBaseline row) {

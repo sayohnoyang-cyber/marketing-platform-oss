@@ -141,6 +141,54 @@ class CouponWalletFlowTest {
                 .andExpect(status().isConflict());
     }
 
+    @Test void merchantRedemptionsLedgerSupportsKeywordStatusFilterAndWorkspaceIsolation() throws Exception {
+        var merchant = register("MERCHANT");
+        var other = register("MERCHANT");
+        var user = register("USER");
+        UserContext.set(CurrentUser.builder().userId(merchant.path("userId").asLong()).merchantId(merchant.path("merchantId").asLong())
+                .roles(Set.of(UserRole.USER, UserRole.OWNER)).build());
+        var now = LocalDateTime.now();
+        var template = templates.create(null, "台账检索测试券", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10, now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":5}", "{\"minSpend\":\"10\",\"capAmount\":\"5.00\"}");
+        var v1 = claims.claim(user.path("userId").asLong(), template.getId(), IssuerScope.MERCHANT, "ledger-c1");
+        var v2 = claims.claim(user.path("userId").asLong(), template.getId(), IssuerScope.MERCHANT, "ledger-c2");
+        UserContext.clear();
+
+        String owner = merchant.path("token").asText();
+        mvc.perform(post("/api/merchant/vouchers/" + v1.getId() + "/redeem").header("Authorization", "Bearer " + owner)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"orderNo\":\"ORD-LEDGER-1\",\"orderAmount\":50}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/merchant/vouchers/" + v2.getId() + "/redeem").header("Authorization", "Bearer " + owner)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"orderNo\":\"ORD-LEDGER-2\",\"orderAmount\":60}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/merchant/vouchers/" + v2.getId() + "/refund").header("Authorization", "Bearer " + owner)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"orderNo\":\"ORD-LEDGER-2\",\"refundAmount\":55}"))
+                .andExpect(status().isOk());
+
+        // 商家可查询全部 2 笔，并按订单号、券码与状态筛选
+        mvc.perform(get("/api/merchant/vouchers/redemptions").header("Authorization", "Bearer " + owner))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2));
+        mvc.perform(get("/api/merchant/vouchers/redemptions").header("Authorization", "Bearer " + owner).param("keyword", "LEDGER-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records[0].orderNo").value("ORD-LEDGER-1"));
+        mvc.perform(get("/api/merchant/vouchers/redemptions").header("Authorization", "Bearer " + owner).param("keyword", String.valueOf(v2.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.records[0].status").value("refunded"));
+        mvc.perform(get("/api/merchant/vouchers/redemptions").header("Authorization", "Bearer " + owner).param("status", "completed"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1));
+
+        // 跨商家隔离与普通用户禁止访问
+        mvc.perform(get("/api/merchant/vouchers/redemptions").header("Authorization", "Bearer " + other.path("token").asText()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(0));
+        mvc.perform(get("/api/merchant/vouchers/redemptions").header("Authorization", "Bearer " + user.path("token").asText()))
+                .andExpect(status().isForbidden());
+    }
+
     private JsonNode register(String type) throws Exception {
         var body = Map.of("username", "w_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10), "password", "testPassword123", "registerType", type, "merchantName", "测试工作空间");
         var result = mvc.perform(post("/api/identity/register").contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)))

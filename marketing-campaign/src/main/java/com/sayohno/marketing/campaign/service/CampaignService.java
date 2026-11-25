@@ -22,6 +22,8 @@ import com.sayohno.marketing.coupon.service.OfferPlanService;
 import com.sayohno.marketing.identity.service.MerchantAccessService;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.service.LinkDirectoryService;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -55,6 +57,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
     private final CampaignReservationMapper reservationMapper;
     private final CampaignPageCache pageCache;
     private final Clock clock;
+    private final ObjectProvider<CapacityBaselineService> capacityBaselines;
 
     public CampaignService(CampaignActivityMapper activityMapper,
                            CampaignOfferMapper couponMapper,
@@ -66,6 +69,22 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
                            CampaignReservationMapper reservationMapper,
                            CampaignPageCache pageCache,
                            Clock clock) {
+        this(activityMapper, couponMapper, templateService, allocationService, publishService,
+                linkDirectoryService, merchantAccessService, reservationMapper, pageCache, clock, null);
+    }
+
+    @Autowired
+    public CampaignService(CampaignActivityMapper activityMapper,
+                           CampaignOfferMapper couponMapper,
+                           OfferPlanService templateService,
+                           OfferInventoryService allocationService,
+                           CampaignPublishService publishService,
+                           LinkDirectoryService linkDirectoryService,
+                           MerchantAccessService merchantAccessService,
+                           CampaignReservationMapper reservationMapper,
+                           CampaignPageCache pageCache,
+                           Clock clock,
+                           ObjectProvider<CapacityBaselineService> capacityBaselines) {
         this.activityMapper = activityMapper;
         this.couponMapper = couponMapper;
         this.templateService = templateService;
@@ -76,6 +95,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         this.reservationMapper = reservationMapper;
         this.pageCache = pageCache;
         this.clock = clock;
+        this.capacityBaselines = capacityBaselines;
     }
 
     @Transactional
@@ -401,6 +421,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
                 .flatMap(List::stream).map(CampaignOffer::getInventoryId).filter(java.util.Objects::nonNull).distinct().toList();
         Map<Long, OfferPlan> templates = templateService.findOwnedBatch(templateIds);
         Map<Long, OfferInventory> allocations = allocationService.findBatch(allocationIds);
+        boolean hasBaseline = hasUsableBaseline(activities.get(0).getMerchantId());
 
         List<Map<String, Object>> rows = new ArrayList<>(activities.size());
         for (CampaignActivity activity : activities) {
@@ -412,10 +433,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
                     : null;
             List<Map<String, Object>> checks = new ArrayList<>(publishService.checks(activity, linked, template, allocation, link));
             long reserved = reservationCounts.getOrDefault(activity.getId(), 0L);
-            if (reserved == 0L) {
-                checks.add(risk("reservations", "暂无预约", "forecast"));
-            }
-            checks.add(risk("capacity", "容量尚未验证", "forecast"));
+            appendOperationalRisks(checks, phase(activity), reserved, hasBaseline);
             rows.add(buildPresentation(activity, link, linked, template, allocation, checks));
         }
         return rows;
@@ -477,11 +495,29 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         Long reserved = reservationMapper.selectCount(Wrappers.<CampaignReservation>lambdaQuery()
                 .eq(CampaignReservation::getActivityId, activityId)
                 .eq(CampaignReservation::getStatus, ActivityStatuses.RESERVED));
-        if (reserved == null || reserved == 0) {
-            items.add(risk("reservations", "暂无预约", "forecast"));
-        }
-        items.add(risk("capacity", "容量尚未验证", "forecast"));
+        long reservedCount = reserved == null ? 0L : reserved;
+        appendOperationalRisks(items, phase(activity), reservedCount, hasUsableBaseline(activity.getMerchantId()));
         return items;
+    }
+
+    public void deleteRecordAndEvict(long activityId) {
+        activityMapper.deleteById(activityId);
+        pageCache.evict(activityId);
+    }
+
+    private boolean hasUsableBaseline(long merchantId) {
+        CapacityBaselineService baselineService = capacityBaselines == null ? null : capacityBaselines.getIfAvailable();
+        return baselineService != null && baselineService.hasUsableBaseline(merchantId);
+    }
+
+    private static void appendOperationalRisks(List<Map<String, Object>> items, ActivityPhase phase,
+                                               long reservedCount, boolean hasUsableBaseline) {
+        if (phase == ActivityPhase.WARMUP && reservedCount == 0L) {
+            items.add(risk("reservations", "暂无预约，可在推广入口分发活动链接积累预约", "promote"));
+        }
+        if ((phase == ActivityPhase.WARMUP || phase == ActivityPhase.LIVE) && reservedCount > 0L && !hasUsableBaseline) {
+            items.add(risk("capacity", "已有预约但尚未录入当前部署压测基线，大促前建议评估容量", "guard?tab=forecast"));
+        }
     }
 
     private void validateDetails(String name, String activityType, BigDecimal budget) {
@@ -634,7 +670,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
     private static Map<String, Object> risk(String code, String reason, String fix) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("code", code);
-        row.put("passed", true);
+        row.put("passed", false);
         row.put("blocking", false);
         row.put("level", "risk");
         row.put("reason", reason);
@@ -680,6 +716,9 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         if (activity.getStatus() != ActivityStatuses.CANCELLED && phase != ActivityPhase.ENDED) {
             actions.add("terminate");
             actions.add("edit");
+        }
+        if (activity.getStatus() == ActivityStatuses.DRAFT) {
+            actions.add("delete");
         }
         actions.add("copy");
         return actions;
