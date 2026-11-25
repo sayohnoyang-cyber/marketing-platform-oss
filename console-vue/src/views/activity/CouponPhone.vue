@@ -10,12 +10,13 @@
       </div>
       <span>{{ phase }}</span><h2>{{ name || '请选择活动' }}</h2>
       <p>{{ rule }}<template v-if="limit"> · 每人限领 {{ limit }} 张</template></p>
+      <p v-if="eligibility" class="phone-eligibility">{{ eligibility }}</p>
       <p>{{ timeText }}</p>
     </DotStage>
     <p class="device-label">本场优惠券</p>
     <div class="coupon">
       <strong :class="{ compact: String(face || '').replace(/[¥￥折\s]/g, '').length > 4 }"><CouponFace :value="face" /></strong>
-      <div><h3>{{ couponName || '尚未选券' }}</h3><p>{{ rule }}</p></div>
+      <div><h3>{{ couponName || '尚未选券' }}</h3><p>{{ rule }}</p><p v-if="validityNote" class="phone-validity">{{ validityNote }}</p></div>
     </div>
     <div class="actionwrap">
       <button class="btn primary" type="button" :disabled="disabled || busy" @click="triggerAction">{{ busy ? '正在处理…' : actionText }}</button>
@@ -34,6 +35,7 @@ export default {
   props: {
     name: String, phase: String, rule: String, limit: [Number, String], timeText: String,
     face: String, couponName: String, actionText: String, note: String,
+    eligibility: String, validityNote: String,
     disabled: Boolean, busy: Boolean, publicPage: Boolean,
     palette: { type: Array, default: () => [[91, 112, 64], [82, 126, 168]] }
   },

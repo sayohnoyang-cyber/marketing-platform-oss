@@ -49,7 +49,7 @@
             </svg>
           </div>
           <div class="stage-device">
-            <CouponPhone ref="phone" :class="`preview-phone phase-${shown}`" :palette="stagePalette" :name="current.name" :phase="phaseLabel" :rule="couponRuleText(current.couponRule)" :limit="current.maxClaimsPerUser" :time-text="`${clockLabel(current.startTime)} — ${clockLabel(current.endTime)}`" :face="couponFace(current.couponRule)" :coupon-name="current.couponName" :action-text="actionText" :note="message || actionNote" :disabled="!canAct" @action="act" />
+            <CouponPhone ref="phone" :class="`preview-phone phase-${shown}`" :palette="stagePalette" :name="current.name" :phase="phaseLabel" :rule="couponRuleText(current.couponRule)" :limit="current.maxClaimsPerUser" :time-text="`${clockLabel(current.startTime)} — ${clockLabel(current.endTime)}`" :face="couponFace(current.couponRule)" :coupon-name="current.couponName" :eligibility="eligibilityText" :validity-note="validityText" :action-text="actionText" :note="message || actionNote" :disabled="!canAct" @action="act" />
           </div>
         </DotStage>
       </div>
@@ -107,6 +107,20 @@ export default {
       if (this.shown === 'before') return this.person.reserved ? '已预约 · 等待开场' : '预约活动 · 开场不错过'
       if (this.shown === 'live') return this.canAct ? '立即领取优惠券' : '已达本场领取上限'
       return this.shown === 'soldout' ? '本场优惠券已领完' : this.shown === 'ended' ? '活动已结束' : this.blocked || '暂不可领取'
+    },
+    eligibilityText() {
+      const t = this.current?.activityType
+      if (t === '新客领取活动') return '新客专享 · 仅限本工作空间首次领券用户'
+      if (t === '会员专享活动') return '会员专享 · 仅限有历史核销记录用户'
+      return ''
+    },
+    validityText() {
+      try {
+        const hours = Number(JSON.parse(this.current?.couponRule || '{}').validityPeriodHours || 0)
+        return hours > 0 ? `领取后 ${hours} 小时内有效` : ''
+      } catch {
+        return ''
+      }
     },
     actionNote() { return this.shown === 'before' ? `${clockLabel(this.current.startTime)} 开始领取` : `本用户模拟已领 ${this.person.claims} / ${this.current.maxClaimsPerUser || 1} 张 · 各渠道共用限领` },
     previewClock() { return this.mode === 'real' ? '以服务端活动状态为准' : clockLabel(this.mode === 'ended' ? this.current.endTime : this.current.startTime) }

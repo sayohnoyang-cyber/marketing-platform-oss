@@ -4,7 +4,7 @@
     <p v-if="error" class="error" role="alert">{{ error }} <button class="linkbtn" @click="load">重新读取</button></p><p v-if="message" class="flow-message" role="status">{{ message }}</p>
     <OpeningPlanCard ref="openingPlan" :activity-id="activity.id" :version="activity.version" :draft="loading ? null : draftPlan" :dirty="dirty" allow-save :busy="saving || loading" @save="save" />
     <details class="forecast-advanced card section-gap">
-      <summary>高级设置与预测依据 <span>到场率 · 场景 · 容量</span></summary>
+      <summary>工程参数与压测限流配置 <span>研发 / 运维选配 · 到场率 · 场景 · 容量</span></summary>
       <div class="banner"><div><strong>容量报告</strong><p>{{ baseline ? baseline.reportName : '尚未关联实测容量' }}</p></div><button class="linkbtn" @click="capacityDialog = true">录入压测基线</button></div>
     <div class="card flow-pad section-gap">
       <div class="sectionhead flush"><h2>开场压力</h2><span class="pill">情景估算</span></div>

@@ -8,7 +8,7 @@ async function source(name) {
 }
 const { createSandbox, previewPerson, previewSource, visitPreview, actPreview } = await source('previewSandbox')
 const { estimateForecast } = await source('forecastModel')
-const { couponFace, couponRuleText } = await source('format')
+const { couponFace, couponRuleText, couponValidityText } = await source('format')
 
 test('preview reservations and limits apply to the same person across channels', () => {
   const activity = { id: 'a', version: 1, quantity: 2, claimed: 0 }
@@ -55,6 +55,8 @@ test('coupon presentation follows the backend discount fraction convention', () 
   assert.equal(couponFace('{"percentOff":"0.15","capAmount":"30"}'), '8.5 折')
   assert.equal(couponFace('{"capAmount":"30"}'), '¥30')
   assert.equal(couponRuleText('{"minSpend":"199","capAmount":"30"}'), '满 199 减 30')
+  assert.equal(couponValidityText('{"capAmount":"30","validityPeriodHours":72}'), '领取后 72 小时内有效')
+  assert.equal(couponValidityText('{"capAmount":"30","validityPeriodHours":0}'), '')
   assert.equal(couponFace('broken'), '—')
 })
 
@@ -152,6 +154,30 @@ test('late entry response cannot overwrite a newly selected activity', async () 
   resolveOld({ data: { activityId: '1', personalClaimed: 1 } })
   await old
   assert.equal(vm.entry.activityId, '2')
+})
+
+test('landing exposes eligibility, validity note and cancels active reservation', async () => {
+  const calls = []
+  const vm = await landingHarness(async path => {
+    calls.push(path)
+    return {
+      data: {
+        activityId: '1',
+        activityType: '新客领取活动',
+        couponRule: '{"capAmount":"10","validityPeriodHours":48}',
+        action: 'RESERVE',
+        personalReserved: true,
+        personalClaimed: 0
+      }
+    }
+  })
+  await vm.load()
+  assert.equal(vm.eligibilityText, '新客专享 · 仅限本工作空间首次领券用户')
+  assert.equal(vm.validityText, '领取后 48 小时内有效')
+  assert.equal(vm.reserved, true)
+  await vm.cancelReserve()
+  assert.equal(vm.reserved, false)
+  assert.equal(calls[1], '/user/activities/1/reservations/cancel')
 })
 
 const { createPlan, savePlan, draftKey, readDraft, writeDraft } = await import('../src/views/activity/createDraft.mjs')

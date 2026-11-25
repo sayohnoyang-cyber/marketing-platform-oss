@@ -70,6 +70,7 @@ export function createTask(planId, file, runAt) {
 }
 
 export function couponSettlements(id) { return http.get(`/user/vouchers/${id}/redemptions`) }
+export function listMerchantRedemptions(params) { return http.get('/merchant/vouchers/redemptions', { params }) }
 export function cancelCoupon(id, orderNo) { return http.post(`/user/vouchers/${id}/void`, { orderNo }) }
 
 export function claimActivityCouponAsync(activityId, planId, requestId, credential) {

@@ -16,6 +16,10 @@ export function me() {
   return http.get('/identity/me')
 }
 
+export function changePassword(payload) {
+  return http.post('/identity/password', payload)
+}
+
 export function listShops() {
   return http.get('/merchant/shops')
 }

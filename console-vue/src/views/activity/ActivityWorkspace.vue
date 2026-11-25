@@ -35,10 +35,17 @@
       <nav ref="stepNavigation" class="stepper" aria-label="活动配置步骤">
         <router-link v-for="(step, index) in steps" :key="step.path" :to="`/activities/${activity.id}/${step.path}`" custom v-slot="{ navigate, isExactActive }">
           <button type="button" :class="{ on: isExactActive }" :aria-current="isExactActive ? 'step' : null" @click="navigate">
-            <span class="step-number" aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ step.label }}</strong>
+            <span class="step-number" aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ step.label }}<small v-if="step.tag" class="step-tag"> · {{ step.tag }}</small></strong>
           </button>
         </router-link>
       </nav>
+      <div v-if="activity.publishStatus === 'DRAFT'" class="banner draft-banner" role="status">
+        <div>
+          <strong>活动尚未发布（草稿中）</strong>
+          <p>完成基本信息、选券与投放配置后请点击发布，直达链接与渠道入口才会正式生效。</p>
+        </div>
+        <button v-if="canPublish" class="btn primary" type="button" :disabled="acting" @click="openPublish">立即发布</button>
+      </div>
       <p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
       <p v-if="notice" class="flow-message" role="status">{{ notice }}</p>
       <router-view :activity="activity" :channels="channels" :main="mainLink" @reload="load" @snapshot="applySnapshot" @forecast-saved="forecastInfo = $event" @preparation-completed="preparationInfo = $event" />
@@ -98,12 +105,12 @@ export default {
       return this.activity?.allowedActions?.includes('terminate')
     },
     steps() {
-      // 4 步核心工作台：活动配置 -> 推广入口 -> 实时与复盘 -> 高级保障
+      // 按活动生命周期排列：活动配置 -> 推广入口 -> 开场保障(选配) -> 实时与复盘
       return [
         { path: 'setup', label: '活动配置' },
         { path: 'promote', label: '推广入口' },
-        { path: 'analytics', label: '实时与复盘' },
-        { path: 'guard', label: '高级保障' }
+        { path: 'guard', label: '开场保障', tag: '选配' },
+        { path: 'analytics', label: '实时与复盘' }
       ]
     }
   },
@@ -142,7 +149,7 @@ export default {
     },
     phaseText, displayPhase, formatNumber, leftOf, clockLabel,
     checkLabel(code) {
-      return { time: '领取时间已设置', template: '优惠券规则可读取', allocation: '投放库存已分配', 'main-link': '推广主短链已启用', budget: '最大让利在预算内' }[code] || code
+      return { time: '领取时间已设置', template: '优惠券规则可读取', allocation: '投放库存已分配', 'main-link': '推广主短链已启用', budget: '最大让利在预算内', reservations: '预约样本检查', capacity: '容量基线检查' }[code] || code
     },
     async load() {
       const id = this.$route.params.activityId

@@ -3,8 +3,9 @@
     <p v-if="loading && !entry" class="muted">正在打开活动…</p>
     <p v-if="error" class="error" role="alert">{{ error }} <button class="linkbtn" @click="load">重试</button></p>
     <template v-if="entry">
-      <CouponPhone public-page :name="entry.name" :phase="phaseText(entry.phase)" :rule="couponRuleText(entry.couponRule)" :limit="entry.maxClaimsPerUser" :time-text="`${clockLabel(entry.startTime)} — ${clockLabel(entry.endTime)}`" :face="couponFace(entry.couponRule)" :coupon-name="entry.couponName" :action-text="actionText" :note="message || entry.reason || note" :disabled="!canAct || loading" :busy="acting" @action="act">
+      <CouponPhone public-page :name="entry.name" :phase="phaseText(entry.phase)" :rule="couponRuleText(entry.couponRule)" :limit="entry.maxClaimsPerUser" :time-text="`${clockLabel(entry.startTime)} — ${clockLabel(entry.endTime)}`" :face="couponFace(entry.couponRule)" :coupon-name="entry.couponName" :eligibility="eligibilityText" :validity-note="validityText" :action-text="actionText" :note="message || entry.reason || note" :disabled="!canAct || loading" :busy="acting" @action="act">
         <p class="landing-source">来源 · {{ entry.source === 'DIRECT' ? '直接访问' : entry.source === 'UNAVAILABLE' ? '入口不可用' : entry.source }}</p>
+        <button v-if="entry.action === 'RESERVE' && reserved && token" class="linkbtn landing-refresh" :disabled="loading || acting" @click="cancelReserve">取消预约</button>
         <button class="linkbtn landing-refresh" :disabled="loading || acting" @click="load">{{ loading ? '正在刷新…' : '刷新活动状态' }}</button>
         <router-link v-if="token" class="linkbtn landing-refresh" :to="{ path: '/my-coupons', query: { return: $route.fullPath } }">查看我的优惠券</router-link>
       </CouponPhone>
@@ -33,7 +34,28 @@ export default {
       if (this.entry.action === 'CLAIM') return this.canAct ? '立即领取优惠券' : '已达本场领取上限'
       return { SOLD_OUT: '本场优惠券已领完', ENDED: '活动已结束', UNAVAILABLE: this.entry.reason || '链接暂不可用' }[this.entry.action] || '暂不可领取'
     },
-    note() { return this.entry.action === 'RESERVE' ? `${clockLabel(this.entry.startTime)} 开始领取` : this.token ? `本场已领 ${this.claimed} 张 · 还可领 ${Math.max(0, Number(this.entry.maxClaimsPerUser || 1) - this.claimed)} 张` : `已领 ${this.entry.claimed || 0} / 投放 ${this.entry.quantity || 0} 张` },
+    eligibilityText() {
+      const t = this.entry?.activityType
+      if (t === '新客领取活动') return '新客专享 · 仅限本工作空间首次领券用户'
+      if (t === '会员专享活动') return '会员专享 · 仅限有历史核销记录用户'
+      return ''
+    },
+    validityText() {
+      try {
+        const hours = Number(JSON.parse(this.entry?.couponRule || '{}').validityPeriodHours || 0)
+        return hours > 0 ? `领取后 ${hours} 小时内有效` : ''
+      } catch {
+        return ''
+      }
+    },
+    note() {
+      if (this.entry.action === 'RESERVE') return `${clockLabel(this.entry.startTime)} 开始领取`
+      if (this.token) {
+        const remain = this.entry.quantity != null ? ` · 活动剩余 ${Math.max(0, Number(this.entry.quantity) - Number(this.entry.claimed || 0))} 张` : ''
+        return `本场已领 ${this.claimed} 张 · 还可领 ${Math.max(0, Number(this.entry.maxClaimsPerUser || 1) - this.claimed)} 张${remain}`
+      }
+      return `已领 ${this.entry.claimed || 0} / 投放 ${this.entry.quantity || 0} 张`
+    },
     pendingKey() { return `marketing.claim.${this.$store.state.profile?.userId || 'guest'}.${this.$route.params.id}.${this.$route.query.c || 'direct'}` }
   },
   watch: {
@@ -121,6 +143,19 @@ export default {
         }
       } catch (error) { if (current()) this.message = error?.message || (reserving ? '预约失败' : '领取失败') }
       finally { this.acting = false; this.schedule() }
+    },
+    async cancelReserve() {
+      if (this.acting || this.loading || !this.token || !this.entry?.activityId) return
+      this.acting = true; this.message = ''
+      try {
+        await http.post(`/user/activities/${this.entry.activityId}/reservations/cancel`)
+        this.reserved = false
+        this.message = '已取消本场预约'
+      } catch (error) {
+        this.message = error?.message || '取消预约失败'
+      } finally {
+        this.acting = false
+      }
     },
     async pollClaimResult(activityId, reqId, planId, isCurrent) {
       for (let i = 0; i < 20; i++) {

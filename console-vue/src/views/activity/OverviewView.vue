@@ -17,10 +17,10 @@
         <canvas ref="heroDots" class="ov-dots" aria-hidden="true"></canvas>
 
         <div class="ov-top">
-          <span class="ov-label">活动速览</span>
+          <span class="ov-label">当前聚焦活动</span>
           <div class="ov-tabs" role="tablist" aria-label="选择活动" @keydown="tabKey">
             <button
-              v-for="item in rows"
+              v-for="item in topTabs"
               :key="item.id"
               class="ov-tab"
               type="button"
@@ -29,9 +29,12 @@
               :aria-selected="item.id === current.id"
               @click="current = item"
             >
-              {{ item.name }}<small>{{ phaseText(item.phase) }}</small>
+              {{ item.name }}<small>{{ phaseText(displayPhase(item)) }}</small>
             </button>
           </div>
+          <select v-if="sortedRows.length > 5" class="ov-more-select" aria-label="切换更多活动" :value="current.id" @change="selectById($event.target.value)">
+            <option v-for="item in sortedRows" :key="item.id" :value="item.id">{{ item.name }}（{{ phaseText(displayPhase(item)) }}）</option>
+          </select>
         </div>
 
         <div class="ov-grid">
@@ -93,34 +96,9 @@
         </div>
       </section>
 
-      <p v-if="trafficError" class="error" role="alert">{{ trafficError }} <button class="linkbtn" @click="loadTraffic">重新读取流量</button></p>
-      <div class="stats traffic-stats">
-        <div class="card stat ov-stat" style="--tone: #b87e18; --tone-bg: #f8f0df">
-          <div class="ov-stat-top"><div class="statlabel" :title="traffic?.definitions?.reservations">有效预约</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span></div>
-          <div class="value">{{ formatNumber(traffic?.reservations) }}<small>人次</small></div><div class="statfoot"><span :class="deltaClass(traffic?.reservationChange)">{{ deltaText(traffic?.reservationChange) }}</span> {{ comparisonLabel }}</div>
-        </div>
-        <div class="card stat ov-stat" style="--tone: #527ea8; --tone-bg: #ebf1f6">
-          <div class="ov-stat-top"><div class="statlabel" :title="traffic?.definitions?.visitors">累计触达用户</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></span></div>
-          <div class="value">{{ formatNumber(traffic?.visitors) }}<small>人</small></div><div class="statfoot"><span :class="deltaClass(traffic?.visitorChange)">{{ deltaText(traffic?.visitorChange) }}</span> {{ comparisonLabel }}</div>
-        </div>
-        <div class="card stat ov-stat" style="--tone: #5b7040; --tone-bg: #eef1e7">
-          <div class="ov-stat-top"><div class="statlabel" :title="traffic?.definitions?.conversion">领券转化率</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg></span></div>
-          <div class="value">{{ traffic?.conversionRate == null ? '—' : formatNumber(traffic.conversionRate) }}<small v-if="traffic?.conversionRate != null">%</small></div><div class="statfoot"><span :class="deltaClass(traffic?.conversionChange)">{{ deltaText(traffic?.conversionChange, ' 个百分点') }}</span> {{ comparisonLabel }}</div>
-        </div>
-        <div class="card stat ov-stat" style="--tone: var(--clay); --tone-bg: var(--tint)">
-          <div class="ov-stat-top"><div class="statlabel">营销活动总数</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg></span></div>
-          <div class="value">{{ formatNumber(traffic?.activityCount) }}<small>个</small></div><div class="statfoot"><span class="delta-up">{{ formatNumber(traffic?.upcomingCount) }} 场</span> 活动即将开始</div>
-        </div>
-      </div>
-      <div class="traffic-layout">
-        <div class="card traffic-chart-card">
-          <div class="sectionhead"><div><h2>有效访问趋势</h2></div><div class="seg"><button type="button" :class="{ active: period === 'today' }" @click="period = 'today'">今日</button><button type="button" :class="{ active: period === 'week' }" @click="period = 'week'">近 7 日</button></div></div>
-          <div class="traffic-legend"><span><i></i>有效访问</span><span><i class="history"></i>历史同期</span></div>
-          <TrafficTrend :points="traffic?.points || []" :period="period" :loading="trafficLoading" />
-          <div v-if="Number(traffic?.visitors) > 0 && traffic?.insight" class="traffic-caption">{{ traffic.insight }}</div>
-        </div>
+      <div v-if="current" class="focus-grid">
         <div class="card opening-card">
-          <div class="sectionhead"><h2>预约与开场准备</h2><span class="pill" :class="{ amber: !opening.ready }">{{ opening.ready ? '已就绪' : '待检查' }}</span></div>
+          <div class="sectionhead"><h2>当前活动 · 预约与开场准备</h2><span class="pill" :class="{ amber: !opening.ready }">{{ opening.ready ? '已就绪' : '待检查' }}</span></div>
           <div class="opening-body"><div class="mini">{{ opening.name || current?.name || '尚未选择活动' }} · 预计开抢压力</div>
             <div class="opening-reservations"><span>有效预约 <b>{{ formatNumber(opening.plan?.reservationCount) }}</b> 人</span><span>预计到场 <b>{{ formatNumber(opening.plan?.expectedArrivals) }}</b> 人</span></div>
             <div class="opening-forecast-label">当前预约估算 · 非实时请求量</div>
@@ -128,21 +106,50 @@
             <div class="meter"><span :style="{ width: capacityPercent == null ? '0%' : `${Math.min(100, capacityPercent)}%` }"></span></div>
             <div class="metertxt"><span>预计压力 / 安全容量</span><span>{{ capacityPercent == null ? '待验证' : `${capacityPercent}%` }}</span></div>
             <div class="divider"></div><div v-for="item in readinessRows" :key="item.label" class="checkrow"><span>{{ item.label }}</span><b :class="{ 'pending-text': !item.ready }" :title="item.detail">{{ item.ready ? '✓ 已就绪' : item.status }}</b></div>
-            <router-link class="linkbtn opening-link" :to="current ? `/activities/${current.id}/guard` : '/activities/new'">{{ current ? '进入高级保障（预测与预热）' : '创建活动并配置预测' }}</router-link>
+            <router-link class="linkbtn opening-link" :to="current ? `/activities/${current.id}/guard` : '/activities/new'">{{ current ? '进入开场保障（预测与预热）' : '创建活动并配置预测' }}</router-link>
+          </div>
+        </div>
+        <div class="card" style="padding: 24px">
+          <div class="sectionhead" style="padding: 0">
+            <h2>当前活动 · 待处理</h2>
+            <span class="pill" :class="{ amber: pending.length }">{{ pending.length ? pending.length + ' 项' : '全部就绪' }}</span>
+          </div>
+          <p v-if="!pending.length" class="muted">没有需要处理的事项。</p>
+          <div v-for="item in pending" :key="item.code" class="checkrow">
+            <span>{{ item.reason }}</span>
+            <router-link class="linkbtn" :to="activityPath(current, item.fix || 'setup')">去处理</router-link>
           </div>
         </div>
       </div>
 
-      <div class="card" style="margin-bottom: 22px; padding: 24px">
-        <div class="sectionhead" style="padding: 0">
-          <h2>待处理</h2>
-          <span class="pill" :class="{ amber: pending.length }">{{ pending.length ? pending.length + ' 项' : '全部就绪' }}</span>
+      <div class="ov-section-divider">
+        <h2>工作空间整体流量概览</h2>
+        <span class="muted">汇总当前工作空间全部活动数据</span>
+      </div>
+      <p v-if="trafficError" class="error" role="alert">{{ trafficError }} <button class="linkbtn" @click="loadTraffic">重新读取流量</button></p>
+      <div class="stats traffic-stats">
+        <div class="card stat ov-stat" style="--tone: #b87e18; --tone-bg: #f8f0df">
+          <div class="ov-stat-top"><div class="statlabel" :title="traffic?.definitions?.reservations">全空间有效预约</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span></div>
+          <div class="value">{{ formatNumber(traffic?.reservations) }}<small>人次</small></div><div class="statfoot"><span :class="deltaClass(traffic?.reservationChange)">{{ deltaText(traffic?.reservationChange) }}</span> {{ comparisonLabel }}</div>
         </div>
-        <p v-if="!pending.length" class="muted">没有需要处理的事项。</p>
-        <div v-for="item in pending" :key="item.code" class="checkrow">
-          <span>{{ item.reason }}</span>
-          <router-link class="linkbtn" :to="activityPath(current, item.fix || 'info')">去处理</router-link>
+        <div class="card stat ov-stat" style="--tone: #527ea8; --tone-bg: #ebf1f6">
+          <div class="ov-stat-top"><div class="statlabel" :title="traffic?.definitions?.visitors">全空间累计触达</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></span></div>
+          <div class="value">{{ formatNumber(traffic?.visitors) }}<small>人</small></div><div class="statfoot"><span :class="deltaClass(traffic?.visitorChange)">{{ deltaText(traffic?.visitorChange) }}</span> {{ comparisonLabel }}</div>
         </div>
+        <div class="card stat ov-stat" style="--tone: #5b7040; --tone-bg: #eef1e7">
+          <div class="ov-stat-top"><div class="statlabel" :title="traffic?.definitions?.conversion">全空间领券转化率</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg></span></div>
+          <div class="value">{{ traffic?.conversionRate == null ? '—' : formatNumber(traffic.conversionRate) }}<small v-if="traffic?.conversionRate != null">%</small></div><div class="statfoot"><span :class="deltaClass(traffic?.conversionChange)">{{ deltaText(traffic?.conversionChange, ' 个百分点') }}</span> {{ comparisonLabel }}</div>
+        </div>
+        <div class="card stat ov-stat" style="--tone: var(--clay); --tone-bg: var(--tint)">
+          <div class="ov-stat-top"><div class="statlabel">营销活动总数</div><span class="ov-stat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/></svg></span></div>
+          <div class="value">{{ formatNumber(traffic?.activityCount) }}<small>个</small></div><div class="statfoot"><span class="delta-up">{{ formatNumber(traffic?.upcomingCount) }} 场</span> 活动即将开始</div>
+        </div>
+      </div>
+      <div class="card traffic-chart-card" style="margin-bottom: 22px">
+        <div class="sectionhead"><div><h2>全空间有效访问趋势</h2></div><div class="seg"><button type="button" :class="{ active: period === 'today' }" @click="period = 'today'">今日</button><button type="button" :class="{ active: period === 'week' }" @click="period = 'week'">近 7 日</button></div></div>
+        <div class="traffic-legend"><span><i></i>有效访问</span><span><i class="history"></i>历史同期</span></div>
+        <TrafficTrend :points="traffic?.points || []" :period="period" :loading="trafficLoading" />
+        <div v-if="Number(traffic?.visitors) > 0 && traffic?.insight" class="traffic-caption">{{ traffic.insight }}</div>
       </div>
       <div class="card">
         <div class="tabletop"><h2>近期活动 <span class="muted" style="margin-left: 9px">{{ rows.length }} 个活动</span></h2></div>
@@ -193,6 +200,17 @@ export default {
     }
   },
   computed: {
+    sortedRows() {
+      const rank = { LIVE: 0, WARMUP: 1, DRAFT: 2, SOLDOUT: 3, PAUSED: 4, OFFLINE: 5, ENDED: 6, CANCELLED: 7 }
+      return [...this.rows].sort((a, b) => (rank[displayPhase(a)] ?? 9) - (rank[displayPhase(b)] ?? 9))
+    },
+    topTabs() {
+      const head = this.sortedRows.slice(0, 5)
+      if (this.current && !head.some(item => String(item.id) === String(this.current.id))) {
+        return [this.current, ...head.slice(0, 4)]
+      }
+      return head
+    },
     comparisonLabel() { return this.period === 'today' ? '较昨日同期' : '较前7日同期' },
     opening() { return this.traffic?.opening || {} },
     scenarioLabel() { return { low: '保守场景预测', normal: '常规场景预测', high: '集中场景预测' }[this.opening.scenario] || '尚未生成预测' },
@@ -279,17 +297,21 @@ export default {
     deltaText(value, unit = '%') { return value == null ? '暂无可比数据' : Number(value) === 0 ? '持平' : `${Number(value) > 0 ? '↑' : '↓'} ${Math.abs(Number(value))}${unit}` },
     async loadTraffic() {
       const token = ++this.trafficRequestToken
-      this.trafficLoading = true; this.trafficError = ''; this.traffic = null
+      this.trafficLoading = true; this.trafficError = ''
       try { const response = await trafficOverview(this.period, this.current?.id); if (token === this.trafficRequestToken) this.traffic = response.data }
       catch (error) { if (token === this.trafficRequestToken) this.trafficError = error?.message || '流量数据读取失败' }
       finally { if (token === this.trafficRequestToken) this.trafficLoading = false }
     },
+    selectById(id) {
+      const matched = this.sortedRows.find(item => String(item.id) === String(id))
+      if (matched) this.current = matched
+    },
     tabKey(event) {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || !this.topTabs.length) return
       event.preventDefault()
-      const index = this.rows.findIndex(item => item.id === this.current.id)
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? this.rows.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + this.rows.length) % this.rows.length
-      this.current = this.rows[next]
+      const index = this.topTabs.findIndex(item => item.id === this.current.id)
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? this.topTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + this.topTabs.length) % this.topTabs.length
+      this.current = this.topTabs[next]
       this.$nextTick(() => this.$el.querySelector('.ov-tab[aria-selected="true"]')?.focus())
     },
     phaseText, left: leftOf, formatNumber, clockLabel, activityPath,
@@ -316,8 +338,7 @@ export default {
       try {
         const response = await listActivities()
         this.rows = response.data || []
-        const rank = { LIVE: 0, WARMUP: 1, DRAFT: 2, PAUSED: 3 }
-        this.current = [...this.rows].sort((a, b) => (rank[a.phase] ?? 9) - (rank[b.phase] ?? 9))[0] || null
+        this.current = this.sortedRows[0] || null
         if (!this.current) this.loadTraffic()
       } catch (error) {
         this.rows = []
@@ -488,6 +509,10 @@ export default {
 .ov-top { position: relative; z-index: 2; display: flex; align-items: center; gap: 14px; margin-bottom: 24px; flex-wrap: wrap; }
 .ov-label { font-size: 12px; color: var(--muted); font-weight: 500; flex-shrink: 0; }
 .ov-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.ov-more-select { margin-left: auto; min-height: 34px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line); background: #ffffffd6; color: var(--ink2); font-size: 12px; }
+.focus-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 26px; align-items: start; }
+.ov-section-divider { display: flex; align-items: baseline; gap: 12px; margin: 8px 0 14px; flex-wrap: wrap; }
+.ov-section-divider h2 { margin: 0; font-size: 18px; font-weight: 600; }
 .ov-tab {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 500;
@@ -586,7 +611,7 @@ export default {
 @keyframes ov-swap { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 1100px) {
-  .ov-grid { grid-template-columns: 1fr; }
+  .ov-grid, .focus-grid { grid-template-columns: 1fr; }
   .ov-orbit-box { left: 16%; }
 }
 @media (max-width: 720px) {

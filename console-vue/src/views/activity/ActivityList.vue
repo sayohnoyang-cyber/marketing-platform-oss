@@ -52,13 +52,28 @@
       </DotStage>
 
       <div class="card">
-        <div class="tabletop">
+        <div class="tabletop list-tabletop">
           <h2>
             {{ activeCardLabel }} <span>{{ filtered.length }} 个活动</span>
             <button v-if="statusFilter !== 'ALL'" class="linkbtn clear-filter" type="button" @click="toggleFilter('ALL')">查看全部</button>
           </h2>
-          <input v-model.trim="keyword" placeholder="搜索活动名称…" aria-label="搜索活动名称" />
+          <div class="list-controls">
+            <select v-model="statusFilter" class="list-select" aria-label="按活动状态筛选">
+              <option value="ALL">全部状态</option>
+              <option value="DRAFT">草稿</option>
+              <option value="WARMUP">预热中</option>
+              <option value="LIVE">进行中</option>
+              <option value="SOLDOUT">已领完</option>
+              <option value="ENDED">已结束</option>
+              <option value="OFFLINE">已下线</option>
+              <option value="PAUSED">已暂停</option>
+              <option value="CANCELLED">已终止</option>
+              <option value="PENDING">有待处理事项</option>
+            </select>
+            <input v-model.trim="keyword" placeholder="搜索活动名称…" aria-label="搜索活动名称" />
+          </div>
         </div>
+        <p v-if="notice" class="flow-message" role="status">{{ notice }}</p>
         <EmptyState v-if="!filtered.length" :title="keyword || statusFilter !== 'ALL' ? '没有匹配的活动' : '暂无活动'">
           <button v-if="keyword || statusFilter !== 'ALL'" class="btn" @click="keyword = ''; statusFilter = 'ALL'">清除筛选</button>
           <router-link v-else class="btn primary" to="/activities/new">创建活动</router-link>
@@ -82,12 +97,28 @@
                   {{ item.checksPassed || 0 }} / {{ item.checksTotal || 0 }}
                   <div class="cellprogress"><span :style="{ width: readyWidth(item), background: isFullReady(item) ? '#5b7040' : '#b87e18' }"></span></div>
                 </td>
-                <td><router-link class="linkbtn" :to="activityPath(item, 'setup')">进入配置</router-link></td>
+                <td>
+                  <div class="row-actions">
+                    <router-link class="linkbtn" :to="activityPath(item, 'setup')">进入配置</router-link>
+                    <router-link v-if="item.phase !== 'DRAFT'" class="linkbtn" :to="`/activities/${item.id}/analytics`">数据</router-link>
+                    <router-link class="linkbtn" :to="`/preview?activity=${item.id}`">预览</router-link>
+                    <router-link class="linkbtn" :to="`/activities/new?copy=${item.id}`">复制</router-link>
+                    <button v-if="item.phase === 'DRAFT'" class="linkbtn danger-link" type="button" @click="deleteTarget = item; deleteError = ''">删除</button>
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
+      <StudioModal v-if="deleteTarget" title="确认删除草稿？" :busy="deleting" @close="deleteTarget = null">
+        <p class="note">确定删除草稿「{{ deleteTarget.name }}」？若已预占优惠券库存，删除时会自动退回对应券模板。</p>
+        <p v-if="deleteError" class="form-alert" role="alert">{{ deleteError }}</p>
+        <div class="actions modal-actions">
+          <button class="btn" type="button" :disabled="deleting" @click="deleteTarget = null">取消</button>
+          <button class="btn primary" type="button" :disabled="deleting" @click="confirmDelete">{{ deleting ? '删除中…' : '确认删除' }}</button>
+        </div>
+      </StudioModal>
     </template>
   </section>
 </template>
@@ -95,7 +126,8 @@
 <script>
 import EmptyState from '@/components/EmptyState.vue'
 import DotStage from '@/components/DotStage.vue'
-import { listActivities } from '@/api/campaign'
+import StudioModal from '@/components/StudioModal.vue'
+import { deleteActivity, listActivities } from '@/api/campaign'
 import { activityPath, dayRange, displayPhase, formatNumber, phaseText } from './format'
 
 const STAGE_PALETTES = {
@@ -107,9 +139,9 @@ const STAGE_PALETTES = {
 }
 
 export default {
-  components: { EmptyState, DotStage },
+  components: { EmptyState, DotStage, StudioModal },
   data() {
-    return { rows: [], keyword: '', statusFilter: 'ALL', loading: false, error: '' }
+    return { rows: [], keyword: '', statusFilter: 'ALL', loading: false, error: '', notice: '', deleteTarget: null, deleting: false, deleteError: '' }
   },
   computed: {
     stagePalette() {
@@ -129,7 +161,7 @@ export default {
       ]
     },
     activeCardLabel() {
-      return { ALL: '全部活动', DRAFT: '草稿活动', WARMUP: '预热中活动', LIVE: '进行中活动', PENDING: '有待处理事项' }[this.statusFilter] || '全部活动'
+      return { ALL: '全部活动', DRAFT: '草稿活动', WARMUP: '预热中活动', LIVE: '进行中活动', SOLDOUT: '已领完活动', ENDED: '已结束活动', OFFLINE: '已下线活动', PAUSED: '已暂停活动', CANCELLED: '已终止活动', PENDING: '有待处理事项' }[this.statusFilter] || '全部活动'
     },
     filtered() {
       const word = this.keyword.toLowerCase()
@@ -137,7 +169,7 @@ export default {
         if (word && !String(item.name).toLowerCase().includes(word)) return false
         if (this.statusFilter === 'ALL') return true
         if (this.statusFilter === 'PENDING') return !['OFFLINE', 'ENDED', 'CANCELLED'].includes(item.phase) && (item.pending?.length || 0) > 0
-        return item.phase === this.statusFilter
+        return displayPhase(item) === this.statusFilter || item.phase === this.statusFilter
       })
     },
     pendingCount() {
@@ -169,6 +201,20 @@ export default {
     },
     reachOf(item) {
       return item.visits == null ? '—' : formatNumber(item.visits)
+    },
+    async confirmDelete() {
+      if (this.deleting || !this.deleteTarget) return
+      this.deleting = true; this.deleteError = ''
+      try {
+        await deleteActivity(this.deleteTarget.id)
+        this.notice = `已删除草稿「${this.deleteTarget.name}」`
+        this.deleteTarget = null
+        await this.load()
+      } catch (error) {
+        this.deleteError = error?.message || '草稿删除失败'
+      } finally {
+        this.deleting = false
+      }
     },
     async load() {
       this.loading = true
@@ -251,6 +297,10 @@ export default {
 .k-bar { height: 4px; border-radius: 4px; background: var(--cloud); overflow: hidden; }
 .k-bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .8s cubic-bezier(.2, .7, .2, 1); }
 .clear-filter { margin-left: 10px; font-size: 12px; font-weight: 500; }
+.list-tabletop { flex-wrap: wrap; gap: 12px; }
+.list-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.list-select { min-height: 38px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+.danger-link { color: #b4422c; }
 
 @keyframes act-turn { to { transform: rotate(360deg); } }
 @keyframes act-halo { from { transform: scale(1); opacity: .55; } to { transform: scale(1.9); opacity: 0; } }

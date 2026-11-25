@@ -16,6 +16,10 @@ export function updateActivity(activityId, payload) {
   return http.patch(`/merchant/activities/${activityId}`, payload)
 }
 
+export function deleteActivity(activityId) {
+  return http.delete(`/merchant/activities/${activityId}`)
+}
+
 export function copyActivity(activityId) {
   return http.post(`/merchant/activities/${activityId}/copy`)
 }
