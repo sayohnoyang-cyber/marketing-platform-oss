@@ -8,9 +8,9 @@ public interface OfferStockGateway {
      */
     int compensate(long templateId, long userId, int claimSeq, long claimRequestId);
 
-    Integer readHold(long claimRequestId);
+    Integer readHold(long templateId, long claimRequestId);
 
-    void releaseHold(long claimRequestId);
+    void releaseHold(long templateId, long claimRequestId);
 
     void increaseIfPresent(long templateId, int delta);
 
@@ -24,22 +24,29 @@ public interface OfferStockGateway {
 
     int compensateAllocationByKey(long inventoryId, long templateId, long userId, int templateCount, int allocCount, String claimKey);
 
-    HoldMark readAllocationHold(long inventoryId, long claimRequestId);
+    HoldMark readAllocationHold(long templateId, long inventoryId, long claimRequestId);
 
-    void releaseAllocationHold(long inventoryId, long claimRequestId);
+    void releaseAllocationHold(long templateId, long inventoryId, long claimRequestId);
 
-    void releaseAllocationHoldByKey(long inventoryId, String claimKey);
+    void releaseAllocationHoldByKey(long templateId, long inventoryId, String claimKey);
 
-    void increaseAllocationIfPresent(long inventoryId, int delta);
+    void increaseAllocationIfPresent(long templateId, long inventoryId, int delta);
 
-    void decreaseAllocationIfPresent(long inventoryId, int delta);
+    void decreaseAllocationIfPresent(long templateId, long inventoryId, int delta);
 
-    void deleteAllocation(long inventoryId);
+    void deleteAllocation(long templateId, long inventoryId);
 
     /**
      * 判断投放库存缓存键是否已初始化；缓存已预热时可跳过昂贵的在途票据 COUNT(*) 兜底查询。
      */
-    default boolean hasAllocationStock(long inventoryId) {
+    default boolean hasAllocationStock(long templateId, long inventoryId) {
         return false;
+    }
+
+    /**
+     * 读取投放缓存中的实时剩余库存；未启用缓存或尚未初始化时返回 null，避免外部模块硬编码拼接库存 Redis Key。
+     */
+    default Integer readAllocationRemaining(long templateId, long inventoryId) {
+        return null;
     }
 }

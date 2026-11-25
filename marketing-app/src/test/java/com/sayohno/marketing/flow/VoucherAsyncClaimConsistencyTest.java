@@ -93,7 +93,7 @@ class VoucherAsyncClaimConsistencyTest {
                 .eq(ClaimTicket::getInventoryId, inventory.getId())
                 .eq(ClaimTicket::getRequestId, requestId));
         assertNotNull(ticket);
-        assertNotNull(stockGateway.readAllocationHold(inventory.getId(), ticket.getId()));
+        assertNotNull(stockGateway.readAllocationHold(plan.getId(), inventory.getId(), ticket.getId()));
 
         // 验证禁止在外层事务中调用 completeAsyncClaim
         transactionTemplate.executeWithoutResult(status -> assertThrows(IllegalStateException.class,
@@ -105,7 +105,7 @@ class VoucherAsyncClaimConsistencyTest {
         ClaimTicket done = ticketMapper.selectById(ticket.getId());
         assertEquals(ClaimTicketStatus.SUCCEEDED, done.getStatus());
         assertNotNull(done.getVoucherId());
-        assertNull(stockGateway.readAllocationHold(inventory.getId(), ticket.getId()));
+        assertNull(stockGateway.readAllocationHold(plan.getId(), inventory.getId(), ticket.getId()));
         assertNotNull(voucherMapper.selectById(done.getVoucherId()));
 
         OutboxEvent event = outboxMapper.selectOne(Wrappers.<OutboxEvent>lambdaQuery()
@@ -157,7 +157,7 @@ class VoucherAsyncClaimConsistencyTest {
         voucherEventHandler.handle(transientEvent);
         ClaimTicket failed = ticketMapper.selectById(ticket.getId());
         assertEquals(ClaimTicketStatus.FAILED, failed.getStatus());
-        assertNull(stockGateway.readAllocationHold(inventory.getId(), ticket.getId()));
+        assertNull(stockGateway.readAllocationHold(plan.getId(), inventory.getId(), ticket.getId()));
 
         // 验证 Inbox 已标记消费（终态补偿成功），不会重复消费
         assertEquals(1L, inboxMapper.selectCount(Wrappers.<ConsumerInbox>lambdaQuery()

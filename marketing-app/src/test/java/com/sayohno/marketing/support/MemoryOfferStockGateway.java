@@ -60,12 +60,12 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public synchronized Integer readHold(long claimRequestId) {
+    public synchronized Integer readHold(long templateId, long claimRequestId) {
         return holds.get(claimRequestId);
     }
 
     @Override
-    public synchronized void releaseHold(long claimRequestId) {
+    public synchronized void releaseHold(long templateId, long claimRequestId) {
         holds.remove(claimRequestId);
     }
 
@@ -142,22 +142,22 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public synchronized HoldMark readAllocationHold(long inventoryId, long claimRequestId) {
+    public synchronized HoldMark readAllocationHold(long templateId, long inventoryId, long claimRequestId) {
         return allocationHolds.get(holdKey(inventoryId, claimRequestId));
     }
 
     @Override
-    public synchronized void releaseAllocationHold(long inventoryId, long claimRequestId) {
-        releaseAllocationHoldByKey(inventoryId, Long.toString(claimRequestId));
+    public synchronized void releaseAllocationHold(long templateId, long inventoryId, long claimRequestId) {
+        releaseAllocationHoldByKey(templateId, inventoryId, Long.toString(claimRequestId));
     }
 
     @Override
-    public synchronized void releaseAllocationHoldByKey(long inventoryId, String claimKey) {
+    public synchronized void releaseAllocationHoldByKey(long templateId, long inventoryId, String claimKey) {
         allocationHolds.remove(inventoryId + ":" + claimKey);
     }
 
     @Override
-    public synchronized void increaseAllocationIfPresent(long inventoryId, int delta) {
+    public synchronized void increaseAllocationIfPresent(long templateId, long inventoryId, int delta) {
         State state = allocations.get(inventoryId);
         if (state != null) {
             state.stock += delta;
@@ -165,7 +165,7 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public synchronized void decreaseAllocationIfPresent(long inventoryId, int delta) {
+    public synchronized void decreaseAllocationIfPresent(long templateId, long inventoryId, int delta) {
         State state = allocations.get(inventoryId);
         if (state == null) {
             return;
@@ -177,13 +177,19 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public synchronized void deleteAllocation(long inventoryId) {
+    public synchronized void deleteAllocation(long templateId, long inventoryId) {
         allocations.remove(inventoryId);
     }
 
     @Override
-    public synchronized boolean hasAllocationStock(long inventoryId) {
+    public synchronized boolean hasAllocationStock(long templateId, long inventoryId) {
         return allocations.containsKey(inventoryId);
+    }
+
+    @Override
+    public synchronized Integer readAllocationRemaining(long templateId, long inventoryId) {
+        State state = allocations.get(inventoryId);
+        return state == null ? null : Math.max(0, state.stock);
     }
 
     private int templateCount(long templateId, long userId) {

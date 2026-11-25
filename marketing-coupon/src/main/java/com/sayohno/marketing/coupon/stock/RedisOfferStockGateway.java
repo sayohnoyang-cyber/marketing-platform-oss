@@ -20,6 +20,7 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     private final DefaultRedisScript<List> allocationAcquireScript;
     private final DefaultRedisScript<Long> allocationCompensateScript;
     private final DefaultRedisScript<Long> allocationDecreaseScript;
+    private final DefaultRedisScript<Long> stockIncreaseScript;
 
     public RedisOfferStockGateway(StringRedisTemplate redis) {
         this.redis = redis;
@@ -38,12 +39,17 @@ public class RedisOfferStockGateway implements OfferStockGateway {
         this.allocationDecreaseScript = new DefaultRedisScript<>();
         this.allocationDecreaseScript.setLocation(new ClassPathResource("lua/trim_offer_quota.lua"));
         this.allocationDecreaseScript.setResultType(Long.class);
+        this.stockIncreaseScript = new DefaultRedisScript<>();
+        this.stockIncreaseScript.setLocation(new ClassPathResource("lua/increase_offer_stock.lua"));
+        this.stockIncreaseScript.setResultType(Long.class);
     }
 
     @Override
     public StockDecision tryAcquire(long templateId, long userId, int limit, int dbStock, long ttlSeconds, long claimRequestId) {
         List<?> result = redis.execute(acquireScript,
-                List.of(OfferInventoryKeys.planInventory(templateId), OfferInventoryKeys.planQuota(userId, templateId), OfferInventoryKeys.ticket(claimRequestId)),
+                List.of(OfferInventoryKeys.planInventory(templateId),
+                        OfferInventoryKeys.planQuota(userId, templateId),
+                        OfferInventoryKeys.ticket(templateId, claimRequestId)),
                 Integer.toString(limit), Long.toString(ttlSeconds), Integer.toString(dbStock));
         if (result == null || result.size() < 2) {
             throw new BizException(ErrorCode.SYSTEM, "库存脚本没有返回结果");
@@ -54,7 +60,9 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     @Override
     public int compensate(long templateId, long userId, int claimSeq, long claimRequestId) {
         Long result = redis.execute(compensateScript,
-                List.of(OfferInventoryKeys.planInventory(templateId), OfferInventoryKeys.planQuota(userId, templateId), OfferInventoryKeys.ticket(claimRequestId)),
+                List.of(OfferInventoryKeys.planInventory(templateId),
+                        OfferInventoryKeys.planQuota(userId, templateId),
+                        OfferInventoryKeys.ticket(templateId, claimRequestId)),
                 Integer.toString(claimSeq));
         if (result == null) {
             throw new BizException(ErrorCode.SYSTEM, "库存补偿脚本没有返回结果");
@@ -63,22 +71,23 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public Integer readHold(long claimRequestId) {
-        String value = redis.opsForValue().get(OfferInventoryKeys.ticket(claimRequestId));
+    public Integer readHold(long templateId, long claimRequestId) {
+        String value = redis.opsForValue().get(OfferInventoryKeys.ticket(templateId, claimRequestId));
         return value == null ? null : Integer.valueOf(value);
     }
 
     @Override
-    public void releaseHold(long claimRequestId) {
-        redis.delete(OfferInventoryKeys.ticket(claimRequestId));
+    public void releaseHold(long templateId, long claimRequestId) {
+        redis.delete(OfferInventoryKeys.ticket(templateId, claimRequestId));
     }
 
     @Override
     public void increaseIfPresent(long templateId, int delta) {
-        String key = OfferInventoryKeys.planInventory(templateId);
-        if (Boolean.TRUE.equals(redis.hasKey(key))) {
-            redis.opsForValue().increment(key, delta);
+        if (delta <= 0) {
+            return;
         }
+        // 使用 Lua 在 Redis 单线程内原子完成“存在才递增”，避免 hasKey + increment 之间的键过期竞态。
+        redis.execute(stockIncreaseScript, List.of(OfferInventoryKeys.planInventory(templateId)), Integer.toString(delta));
     }
 
     @Override
@@ -92,10 +101,10 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     public StockDecision tryAcquireAllocationByKey(long inventoryId, long templateId, long userId, int allocationLimit,
                                                    int templateLimit, int dbRemaining, long ttlSeconds, String claimKey) {
         List<?> result = redis.execute(allocationAcquireScript, List.of(
-                OfferInventoryKeys.inventory(inventoryId),
-                OfferInventoryKeys.inventoryQuota(userId, inventoryId),
+                OfferInventoryKeys.inventory(templateId, inventoryId),
+                OfferInventoryKeys.inventoryQuota(templateId, userId, inventoryId),
                 OfferInventoryKeys.planQuota(userId, templateId),
-                OfferInventoryKeys.inventoryTicketByKey(inventoryId, claimKey)),
+                OfferInventoryKeys.inventoryTicketByKey(templateId, inventoryId, claimKey)),
                 Integer.toString(allocationLimit), Integer.toString(templateLimit),
                 Long.toString(ttlSeconds), Integer.toString(dbRemaining));
         if (result == null || result.size() < 3) {
@@ -112,10 +121,10 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     @Override
     public int compensateAllocationByKey(long inventoryId, long templateId, long userId, int templateCount, int allocCount, String claimKey) {
         Long result = redis.execute(allocationCompensateScript, List.of(
-                OfferInventoryKeys.inventory(inventoryId),
-                OfferInventoryKeys.inventoryQuota(userId, inventoryId),
+                OfferInventoryKeys.inventory(templateId, inventoryId),
+                OfferInventoryKeys.inventoryQuota(templateId, userId, inventoryId),
                 OfferInventoryKeys.planQuota(userId, templateId),
-                OfferInventoryKeys.inventoryTicketByKey(inventoryId, claimKey)),
+                OfferInventoryKeys.inventoryTicketByKey(templateId, inventoryId, claimKey)),
                 Integer.toString(templateCount), Integer.toString(allocCount));
         if (result == null) {
             throw new BizException(ErrorCode.SYSTEM, "投放补偿脚本没有返回结果");
@@ -124,35 +133,36 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public HoldMark readAllocationHold(long inventoryId, long claimRequestId) {
-        String value = redis.opsForValue().get(OfferInventoryKeys.inventoryTicket(inventoryId, claimRequestId));
+    public HoldMark readAllocationHold(long templateId, long inventoryId, long claimRequestId) {
+        String value = redis.opsForValue().get(OfferInventoryKeys.inventoryTicket(templateId, inventoryId, claimRequestId));
         return value == null ? null : HoldMark.parse(value);
     }
 
     @Override
-    public void releaseAllocationHold(long inventoryId, long claimRequestId) {
-        releaseAllocationHoldByKey(inventoryId, Long.toString(claimRequestId));
+    public void releaseAllocationHold(long templateId, long inventoryId, long claimRequestId) {
+        releaseAllocationHoldByKey(templateId, inventoryId, Long.toString(claimRequestId));
     }
 
     @Override
-    public void releaseAllocationHoldByKey(long inventoryId, String claimKey) {
-        redis.delete(OfferInventoryKeys.inventoryTicketByKey(inventoryId, claimKey));
+    public void releaseAllocationHoldByKey(long templateId, long inventoryId, String claimKey) {
+        redis.delete(OfferInventoryKeys.inventoryTicketByKey(templateId, inventoryId, claimKey));
     }
 
     @Override
-    public void increaseAllocationIfPresent(long inventoryId, int delta) {
-        String key = OfferInventoryKeys.inventory(inventoryId);
-        if (Boolean.TRUE.equals(redis.hasKey(key))) {
-            redis.opsForValue().increment(key, delta);
-        }
-    }
-
-    @Override
-    public void decreaseAllocationIfPresent(long inventoryId, int delta) {
+    public void increaseAllocationIfPresent(long templateId, long inventoryId, int delta) {
         if (delta <= 0) {
             return;
         }
-        String key = OfferInventoryKeys.inventory(inventoryId);
+        // 使用 Lua 在 Redis 单线程内原子校验存在并递增，防止键过期瞬间创建出无 TTL 的错账库存键。
+        redis.execute(stockIncreaseScript, List.of(OfferInventoryKeys.inventory(templateId, inventoryId)), Integer.toString(delta));
+    }
+
+    @Override
+    public void decreaseAllocationIfPresent(long templateId, long inventoryId, int delta) {
+        if (delta <= 0) {
+            return;
+        }
+        String key = OfferInventoryKeys.inventory(templateId, inventoryId);
         // 通过 Lua 脚本在 Redis 单线程内原子校验并扣减，防止并发下读-改-写导致缓存库存变为负数。
         Long result = redis.execute(allocationDecreaseScript, List.of(key), Integer.toString(delta));
         if (result == null) {
@@ -164,13 +174,19 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public void deleteAllocation(long inventoryId) {
-        redis.delete(OfferInventoryKeys.inventory(inventoryId));
+    public void deleteAllocation(long templateId, long inventoryId) {
+        redis.delete(OfferInventoryKeys.inventory(templateId, inventoryId));
     }
 
     @Override
-    public boolean hasAllocationStock(long inventoryId) {
-        return Boolean.TRUE.equals(redis.hasKey(OfferInventoryKeys.inventory(inventoryId)));
+    public boolean hasAllocationStock(long templateId, long inventoryId) {
+        return Boolean.TRUE.equals(redis.hasKey(OfferInventoryKeys.inventory(templateId, inventoryId)));
+    }
+
+    @Override
+    public Integer readAllocationRemaining(long templateId, long inventoryId) {
+        String raw = redis.opsForValue().get(OfferInventoryKeys.inventory(templateId, inventoryId));
+        return raw == null ? null : Math.max(0, Integer.parseInt(raw));
     }
 
     private static int number(Object value) {

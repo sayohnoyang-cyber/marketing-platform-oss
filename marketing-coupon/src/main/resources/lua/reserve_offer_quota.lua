@@ -1,7 +1,7 @@
--- KEYS[1] offer:inventory:{inventoryId} (string counter)
--- KEYS[2] offer:inventory:{inventoryId}:quota:{userId}
+-- KEYS[1] offer:plan:{planId}:inventory:{inventoryId} (string counter)
+-- KEYS[2] offer:plan:{planId}:inventory:{inventoryId}:quota:{userId}
 -- KEYS[3] offer:plan:{planId}:quota:{userId}
--- KEYS[4] offer:ticket:inv:{inventoryId}:{claimKey}
+-- KEYS[4] offer:plan:{planId}:inventory:{inventoryId}:ticket:{claimKey}
 -- ARGV[1] 本场限领上限
 -- ARGV[2] 方案总限领上限
 -- ARGV[3] 过期秒数

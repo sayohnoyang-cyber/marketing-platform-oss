@@ -1,6 +1,6 @@
 -- KEYS[1] offer:plan:{planId}:inventory (string counter)
 -- KEYS[2] offer:plan:{planId}:quota:{userId}
--- KEYS[3] offer:ticket:{ticketId}
+-- KEYS[3] offer:plan:{planId}:ticket:{ticketId}
 -- ARGV[1] 每人限领上限
 -- ARGV[2] 过期秒数
 -- ARGV[3] 缓存未初始化时的数据库兜底库存

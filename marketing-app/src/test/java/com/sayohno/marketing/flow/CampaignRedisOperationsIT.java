@@ -89,16 +89,17 @@ class CampaignRedisOperationsIT {
     @Test
     void decreaseAllocationStockAtomicallyGuardsAgainstNegativeCache(@Autowired StringRedisTemplate operationsRedis) {
         var gateway = new com.sayohno.marketing.coupon.stock.RedisOfferStockGateway(operationsRedis);
+        long planId = 880001L + new Random().nextInt(10000);
         long inventoryId = 990001L + new Random().nextInt(10000);
-        String key = com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(inventoryId);
+        String key = com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(planId, inventoryId);
         operationsRedis.delete(key);
         try {
             // 缓存未初始化时安全跳过
-            gateway.decreaseAllocationIfPresent(inventoryId, 3);
+            gateway.decreaseAllocationIfPresent(planId, inventoryId, 3);
             operationsRedis.opsForValue().set(key, "5");
-            gateway.decreaseAllocationIfPresent(inventoryId, 3);
+            gateway.decreaseAllocationIfPresent(planId, inventoryId, 3);
             assertEquals("2", operationsRedis.opsForValue().get(key));
-            BizException ex = assertThrows(BizException.class, () -> gateway.decreaseAllocationIfPresent(inventoryId, 3));
+            BizException ex = assertThrows(BizException.class, () -> gateway.decreaseAllocationIfPresent(planId, inventoryId, 3));
             assertEquals(ErrorCode.CONFLICT, ex.getErrorCode());
             assertEquals("2", operationsRedis.opsForValue().get(key));
         } finally {

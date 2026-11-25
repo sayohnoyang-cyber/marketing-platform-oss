@@ -355,7 +355,7 @@ public class CampaignFlowService {
         Integer quantity = snapshot.quantity();
         Integer claimed = snapshot.claimed();
         if (snapshot.inventoryId() != null && quantity != null) {
-            Integer liveRemaining = pageCache.readLiveRemaining(snapshot.inventoryId());
+            Integer liveRemaining = pageCache.readLiveRemaining(snapshot.planId(), snapshot.inventoryId());
             if (liveRemaining != null) {
                 claimed = Math.max(0, quantity - liveRemaining);
             }

@@ -329,7 +329,7 @@ class ActivityFlowTest {
                 .eq(ClaimTicket::getUserId, 99L)
                 .eq(ClaimTicket::getInventoryId, offer.getInventoryId())
                 .eq(ClaimTicket::getRequestId, "comp-req-1"));
-        org.junit.jupiter.api.Assertions.assertNotNull(stockGateway.readAllocationHold(offer.getInventoryId(), ticket.getId()));
+        org.junit.jupiter.api.Assertions.assertNotNull(stockGateway.readAllocationHold(template.getId(), offer.getInventoryId(), ticket.getId()));
 
         // 消费前将券模板置为非 OPEN，异步落库应标记 FAILED 并回补 Redis hold
         template.setStatus(OfferPlanStatus.CLOSED);
@@ -338,7 +338,7 @@ class ActivityFlowTest {
 
         Map<String, Object> failed = flowService.claimStatus(99L, activity.getId(), template.getId(), "comp-req-1");
         assertEquals("FAILED", failed.get("status"));
-        org.junit.jupiter.api.Assertions.assertNull(stockGateway.readAllocationHold(offer.getInventoryId(), ticket.getId()));
+        org.junit.jupiter.api.Assertions.assertNull(stockGateway.readAllocationHold(template.getId(), offer.getInventoryId(), ticket.getId()));
     }
 
     @Test

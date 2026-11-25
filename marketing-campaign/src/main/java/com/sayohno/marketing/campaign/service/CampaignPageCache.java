@@ -2,7 +2,9 @@ package com.sayohno.marketing.campaign.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sayohno.marketing.campaign.dao.entity.CampaignActivity;
+import com.sayohno.marketing.coupon.stock.OfferStockGateway;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -25,13 +27,22 @@ public class CampaignPageCache {
 
     private final ObjectProvider<StringRedisTemplate> redis;
     private final ObjectMapper json;
+    private final ObjectProvider<OfferStockGateway> stockGateway;
     private final Map<Long, LocalEntry> localCache = new ConcurrentHashMap<>();
     /** 按活动 ID 维度做进程内 Singleflight 互斥，合并并发回源加载，防止缓存失效瞬间打穿数据库。 */
     private final Map<Long, Object> singleflightLocks = new ConcurrentHashMap<>();
 
     public CampaignPageCache(ObjectProvider<StringRedisTemplate> redis, ObjectMapper json) {
+        this(redis, json, null);
+    }
+
+    @Autowired
+    public CampaignPageCache(ObjectProvider<StringRedisTemplate> redis,
+                             ObjectMapper json,
+                             ObjectProvider<OfferStockGateway> stockGateway) {
         this.redis = redis;
         this.json = json;
+        this.stockGateway = stockGateway;
     }
 
     public PageSnapshot getOrLoad(long activityId, Supplier<PageSnapshot> loader) {
@@ -69,14 +80,19 @@ public class CampaignPageCache {
         }
     }
 
-    public Integer readLiveRemaining(long inventoryId) {
-        var cache = redis.getIfAvailable();
-        if (cache == null) {
+    /**
+     * 通过 OfferStockGateway 读取投放实时剩余库存，消除跨模块硬编码拼接 coupon Redis 键。
+     */
+    public Integer readLiveRemaining(Long planId, long inventoryId) {
+        if (planId == null || stockGateway == null) {
+            return null;
+        }
+        OfferStockGateway gateway = stockGateway.getIfAvailable();
+        if (gateway == null) {
             return null;
         }
         try {
-            String raw = cache.opsForValue().get("offer:inventory:" + inventoryId);
-            return raw == null ? null : Math.max(0, Integer.parseInt(raw));
+            return gateway.readAllocationRemaining(planId, inventoryId);
         } catch (RuntimeException ignored) {
             return null;
         }

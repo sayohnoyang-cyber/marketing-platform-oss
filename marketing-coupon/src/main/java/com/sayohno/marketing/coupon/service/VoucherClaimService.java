@@ -168,7 +168,7 @@ public class VoucherClaimService {
         Integer templateCount = current.getClaimSeq();
         Integer allocCount = current.getAllocReceiveCount();
         if (templateCount == null || allocCount == null) {
-            HoldMark hold = stockGateway.readAllocationHold(current.getInventoryId(), requestRowId);
+            HoldMark hold = stockGateway.readAllocationHold(current.getPlanId(), current.getInventoryId(), requestRowId);
             if (hold == null) {
                 requestMapper.markFailed(requestRowId, activeToken, LocalDateTime.now());
                 return;
@@ -187,7 +187,7 @@ public class VoucherClaimService {
         try {
             IssuerScope source = current.getIssuerScope() == null ? IssuerScope.MERCHANT : current.getIssuerScope();
             commit(requestRowId, current.getUserId(), template, source, templateCount);
-            stockGateway.releaseAllocationHold(current.getInventoryId(), requestRowId);
+            stockGateway.releaseAllocationHold(current.getPlanId(), current.getInventoryId(), requestRowId);
         } catch (BizException bizException) {
             // 仅对明确不可恢复的业务终态（超限、库存不足、投放关闭）回补 Redis 并标 FAILED；冲突类异常保留重试机会。
             if (bizException.getErrorCode() == ErrorCode.VALIDATION || bizException.getErrorCode() == ErrorCode.NOT_FOUND) {
@@ -314,7 +314,7 @@ public class VoucherClaimService {
         if (current.getInventoryId() != null && current.getInventoryId() > 0) {
             return finishAllocation(template, current, userId, source, token);
         }
-        Integer hold = stockGateway.readHold(requestRowId);
+        Integer hold = stockGateway.readHold(template.getId(), requestRowId);
         int claimSeq;
         if (current.getStatus() == ClaimTicketStatus.RESERVED && current.getClaimSeq() != null) {
             claimSeq = current.getClaimSeq();
@@ -339,7 +339,7 @@ public class VoucherClaimService {
         }
         try {
             IssuedVoucher coupon = commit(requestRowId, userId, template, source, claimSeq);
-            stockGateway.releaseHold(requestRowId);
+            stockGateway.releaseHold(template.getId(), requestRowId);
             return coupon;
         } catch (RuntimeException exception) {
             compensateAndFail(requestRowId, template.getId(), userId, claimSeq, token);
@@ -359,7 +359,7 @@ public class VoucherClaimService {
         int allocCount = counts[1];
         try {
             IssuedVoucher coupon = commit(requestRowId, userId, template, source, templateCount);
-            stockGateway.releaseAllocationHold(inventoryId, requestRowId);
+            stockGateway.releaseAllocationHold(template.getId(), inventoryId, requestRowId);
             return coupon;
         } catch (RuntimeException exception) {
             compensateAllocationAndFail(requestRowId, inventoryId, template.getId(), userId, templateCount, allocCount, token);
@@ -383,7 +383,7 @@ public class VoucherClaimService {
                                          long userId, String token, boolean markImmediately) {
         long inventoryId = allocation.getId();
         long requestRowId = current.getId();
-        HoldMark hold = stockGateway.readAllocationHold(inventoryId, requestRowId);
+        HoldMark hold = stockGateway.readAllocationHold(template.getId(), inventoryId, requestRowId);
         if (current.getStatus() == ClaimTicketStatus.RESERVED && current.getClaimSeq() != null && current.getAllocReceiveCount() != null) {
             return new int[]{current.getClaimSeq(), current.getAllocReceiveCount()};
         }
@@ -397,7 +397,7 @@ public class VoucherClaimService {
         // 仅当 Redis 库存键尚未初始化时才回源查询数据库剩余并扣除在途 RESERVED 票据；
         // 缓存已热时 Lua 不会读取兜底库存参数，跳过 COUNT(*) 可显著降低秒杀热路径的数据库压力。
         int remaining = 0;
-        if (!stockGateway.hasAllocationStock(inventoryId)) {
+        if (!stockGateway.hasAllocationStock(template.getId(), inventoryId)) {
             Long inFlight = requestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
                     .eq(ClaimTicket::getInventoryId, inventoryId)
                     .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
@@ -441,7 +441,7 @@ public class VoucherClaimService {
         }
         if (claimSeq != null) {
             int compensated = stockGateway.compensate(templateId, userId, claimSeq, requestRowId);
-            if (compensated == 0 && stockGateway.readHold(requestRowId) != null) {
+            if (compensated == 0 && stockGateway.readHold(templateId, requestRowId) != null) {
                 return;
             }
         }
@@ -452,7 +452,7 @@ public class VoucherClaimService {
                                              Integer templateCount, Integer allocCount, String token) {
         if (templateCount != null && allocCount != null) {
             int compensated = stockGateway.compensateAllocation(inventoryId, templateId, userId, templateCount, allocCount, requestRowId);
-            if (compensated == 0 && stockGateway.readAllocationHold(inventoryId, requestRowId) != null) {
+            if (compensated == 0 && stockGateway.readAllocationHold(templateId, inventoryId, requestRowId) != null) {
                 return;
             }
         }
@@ -553,8 +553,8 @@ public class VoucherClaimService {
         }
         if (existing.getStatus() == ClaimTicketStatus.FAILED) {
             boolean held = inventoryId == 0
-                    ? stockGateway.readHold(existing.getId()) != null
-                    : stockGateway.readAllocationHold(inventoryId, existing.getId()) != null;
+                    ? stockGateway.readHold(templateId, existing.getId()) != null
+                    : stockGateway.readAllocationHold(templateId, inventoryId, existing.getId()) != null;
             if (!held) {
                 existing.setStatus(ClaimTicketStatus.PENDING);
                 existing.setRedisApplied(0);

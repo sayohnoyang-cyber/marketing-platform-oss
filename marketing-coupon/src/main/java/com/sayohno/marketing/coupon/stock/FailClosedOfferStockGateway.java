@@ -19,12 +19,12 @@ public class FailClosedOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public Integer readHold(long claimRequestId) {
+    public Integer readHold(long templateId, long claimRequestId) {
         throw new BizException(ErrorCode.SYSTEM, "Redis 未启用，不能读取预扣标记");
     }
 
     @Override
-    public void releaseHold(long claimRequestId) {
+    public void releaseHold(long templateId, long claimRequestId) {
     }
 
     @Override
@@ -55,30 +55,30 @@ public class FailClosedOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public HoldMark readAllocationHold(long inventoryId, long claimRequestId) {
+    public HoldMark readAllocationHold(long templateId, long inventoryId, long claimRequestId) {
         throw new BizException(ErrorCode.SYSTEM, "Redis 未启用，不能读取投放预扣");
     }
 
     @Override
-    public void releaseAllocationHold(long inventoryId, long claimRequestId) {
+    public void releaseAllocationHold(long templateId, long inventoryId, long claimRequestId) {
     }
 
     @Override
-    public void releaseAllocationHoldByKey(long inventoryId, String claimKey) {
+    public void releaseAllocationHoldByKey(long templateId, long inventoryId, String claimKey) {
     }
 
     @Override
-    public void increaseAllocationIfPresent(long inventoryId, int delta) {
+    public void increaseAllocationIfPresent(long templateId, long inventoryId, int delta) {
         throw new BizException(ErrorCode.SYSTEM, "Redis 未启用，不能调整投放库存缓存");
     }
 
     @Override
-    public void decreaseAllocationIfPresent(long inventoryId, int delta) {
+    public void decreaseAllocationIfPresent(long templateId, long inventoryId, int delta) {
         throw new BizException(ErrorCode.SYSTEM, "Redis 未启用，不能调整投放库存缓存");
     }
 
     @Override
-    public void deleteAllocation(long inventoryId) {
+    public void deleteAllocation(long templateId, long inventoryId) {
         throw new BizException(ErrorCode.SYSTEM, "Redis 未启用，不能删除投放库存缓存");
     }
 }

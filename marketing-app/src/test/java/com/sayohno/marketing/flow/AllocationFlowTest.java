@@ -207,7 +207,7 @@ class AllocationFlowTest {
         assertEquals(1, allocationService.availableForCache(allocationService.find(inventoryId)));
 
         // 模拟 Redis 库存键丢失，重建库存时必须扣除在途的 1 张，只剩 1 张可给用户 2
-        stockGateway.deleteAllocation(inventoryId);
+        stockGateway.deleteAllocation(template.getId(), inventoryId);
         assertEquals("RESERVED", flowService.claimAsync(9002L, activity.getId(), template.getId(), "if-r2", cred2).get("status"));
         assertThrows(BizException.class, () -> flowService.claimAsync(9003L, activity.getId(), template.getId(), "if-r3", cred3));
     }

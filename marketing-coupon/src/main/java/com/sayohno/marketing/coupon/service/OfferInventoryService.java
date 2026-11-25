@@ -75,7 +75,7 @@ public class OfferInventoryService {
         var template = templateService.requireOwned(allocation.getPlanId());
         var cache = redis.getIfAvailable();
         if (cache == null) return java.util.Map.of("status", "UNVERIFIED", "detail", "Redis未启用，无法预热库存缓存");
-        String key = com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(inventoryId);
+        String key = com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(allocation.getPlanId(), inventoryId);
         int dbRemaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount());
         int available = availableForCache(allocation);
         long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
@@ -109,7 +109,7 @@ public class OfferInventoryService {
             int available = availableForCache(allocation);
             long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
             cache.opsForValue().setIfAbsent(
-                    com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(inventoryId),
+                    com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(allocation.getPlanId(), inventoryId),
                     Integer.toString(available), Duration.ofSeconds(ttl));
         } catch (RuntimeException ignored) {
         }
@@ -120,7 +120,7 @@ public class OfferInventoryService {
         var allocation = requireOwned(inventoryId);
         var cache = redis.getIfAvailable();
         if (cache == null) return java.util.Map.of("status", "UNVERIFIED", "detail", "Redis未启用，无法核对库存缓存");
-        String raw = cache.opsForValue().get(com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(inventoryId));
+        String raw = cache.opsForValue().get(com.sayohno.marketing.coupon.redis.OfferInventoryKeys.inventory(allocation.getPlanId(), inventoryId));
         if (raw == null) return java.util.Map.of("status", "SKIPPED", "detail", "库存缓存尚未初始化，将由真实领取路径初始化；本次未写库存");
         int remaining = allocation.getQuantity() - allocation.getClaimedCount();
         int cached = Integer.parseInt(raw);
@@ -203,14 +203,15 @@ public class OfferInventoryService {
             allocationMapper.updateById(allocation);
         }
         int delta = targetQuantity - allocation.getQuantity();
+        final long planId = allocation.getPlanId();
         if (delta > 0) {
-            if (templateMapper.decrementStock(allocation.getPlanId(), delta, LocalDateTime.now()) != 1) {
+            if (templateMapper.decrementStock(planId, delta, LocalDateTime.now()) != 1) {
                 throw new BizException(ErrorCode.VALIDATION, "可投放数量不足");
             }
             if (allocationMapper.addQuantity(inventoryId, delta, allocation.getQuantity(), LocalDateTime.now()) != 1) {
                 throw new BizException(ErrorCode.CONFLICT, "投放数量已变化，请重试");
             }
-            afterCommit(() -> stockGateway.increaseAllocationIfPresent(inventoryId, delta));
+            afterCommit(() -> stockGateway.increaseAllocationIfPresent(planId, inventoryId, delta));
         } else if (delta < 0) {
             if (!allowReduce) {
                 throw new BizException(ErrorCode.CONFLICT, "开场后不能减少投放");
@@ -219,8 +220,8 @@ public class OfferInventoryService {
             if (allocationMapper.reduceQuantity(inventoryId, reduce, allocation.getQuantity(), LocalDateTime.now()) != 1) {
                 throw new BizException(ErrorCode.VALIDATION, "减少后的投放不能少于已领取数量");
             }
-            templateMapper.returnUnallocated(allocation.getPlanId(), reduce, LocalDateTime.now());
-            afterCommit(() -> stockGateway.decreaseAllocationIfPresent(inventoryId, reduce));
+            templateMapper.returnUnallocated(planId, reduce, LocalDateTime.now());
+            afterCommit(() -> stockGateway.decreaseAllocationIfPresent(planId, inventoryId, reduce));
         }
         return allocationMapper.selectById(inventoryId);
     }
@@ -239,10 +240,11 @@ public class OfferInventoryService {
         if (allocationMapper.freeze(inventoryId, LocalDateTime.now()) != 1) {
             return allocationMapper.selectById(inventoryId);
         }
+        final long planId = allocation.getPlanId();
         if (unclaimed > 0) {
-            templateMapper.returnUnallocated(allocation.getPlanId(), unclaimed, LocalDateTime.now());
+            templateMapper.returnUnallocated(planId, unclaimed, LocalDateTime.now());
         }
-        afterCommit(() -> stockGateway.deleteAllocation(inventoryId));
+        afterCommit(() -> stockGateway.deleteAllocation(planId, inventoryId));
         return allocationMapper.selectById(inventoryId);
     }
 

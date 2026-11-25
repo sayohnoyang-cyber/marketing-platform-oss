@@ -1,7 +1,7 @@
--- KEYS[1] offer:inventory:{inventoryId}
--- KEYS[2] offer:inventory:{inventoryId}:quota:{userId}
+-- KEYS[1] offer:plan:{planId}:inventory:{inventoryId}
+-- KEYS[2] offer:plan:{planId}:inventory:{inventoryId}:quota:{userId}
 -- KEYS[3] offer:plan:{planId}:quota:{userId}
--- KEYS[4] offer:ticket:inv:{inventoryId}:{claimKey}
+-- KEYS[4] offer:plan:{planId}:inventory:{inventoryId}:ticket:{claimKey}
 -- ARGV[1] 方案序号
 -- ARGV[2] 本场序号
 local ticket = redis.call('GET', KEYS[4])
