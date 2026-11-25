@@ -2,6 +2,7 @@ package com.sayohno.marketing.coupon.dao.entity;
 
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.sayohno.marketing.common.mybatis.PersistentEntity;
 import com.sayohno.marketing.coupon.enums.GrantBatchStatus;
 import lombok.Data;
@@ -17,6 +18,9 @@ public class GrantBatch extends PersistentEntity {
     private Long planId;
     private String batchCode;
     private String filePath;
+    /** 共享数据库存储的原始 Excel 字节，消除多实例部署对本机 /tmp 磁盘的依赖。 */
+    @JsonIgnore
+    private byte[] fileContent;
     private LocalDateTime runAt;
     private GrantBatchStatus status;
     private Integer progress;

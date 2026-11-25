@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS grant_batch (
     plan_id BIGINT NOT NULL,
     batch_code VARCHAR(64) NOT NULL,
     file_path VARCHAR(512) NOT NULL,
+    file_content BLOB NULL,
     run_at DATETIME NULL,
     status VARCHAR(32) NOT NULL,
     progress INT NOT NULL DEFAULT 0,
@@ -419,4 +420,12 @@ CREATE TABLE IF NOT EXISTS campaign_create_request (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_campaign_create_request (merchant_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS infra_distributed_lock (
+    lock_name VARCHAR(64) NOT NULL,
+    owner_id VARCHAR(64) NOT NULL,
+    lease_until DATETIME NOT NULL,
+    update_time DATETIME NOT NULL,
+    PRIMARY KEY (lock_name)
 );

@@ -1,25 +1,22 @@
 package com.sayohno.marketing.coupon.service;
 
 import com.alibaba.excel.EasyExcel;
+import com.alibaba.excel.context.AnalysisContext;
+import com.alibaba.excel.read.listener.ReadListener;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.sayohno.marketing.common.config.MarketingProperties;
 import com.sayohno.marketing.common.exception.BizException;
 import com.sayohno.marketing.common.result.ErrorCode;
-import com.sayohno.marketing.coupon.dao.entity.ClaimTicket;
 import com.sayohno.marketing.coupon.dao.entity.GrantBatch;
 import com.sayohno.marketing.coupon.dao.entity.GrantBatchError;
 import com.sayohno.marketing.coupon.dao.entity.OfferPlan;
-import com.sayohno.marketing.coupon.dao.mapper.ClaimTicketMapper;
 import com.sayohno.marketing.coupon.dao.mapper.GrantBatchErrorMapper;
 import com.sayohno.marketing.coupon.dao.mapper.GrantBatchMapper;
-import com.sayohno.marketing.coupon.enums.ClaimTicketStatus;
 import com.sayohno.marketing.coupon.enums.GrantBatchStatus;
 import com.sayohno.marketing.coupon.enums.IssuerScope;
-import com.sayohno.marketing.identity.IamStatus;
-import com.sayohno.marketing.identity.dao.entity.IamUser;
-import com.sayohno.marketing.identity.dao.mapper.IamUserMapper;
+import com.sayohno.marketing.identity.service.IdentityAccountService;
 import com.sayohno.marketing.identity.service.MerchantAccessService;
-import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -33,34 +30,36 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class GrantBatchService {
     private static final Logger log = LoggerFactory.getLogger(GrantBatchService.class);
+    /** 批量更新进度与续租的步长，避免每行都查一次全表 COUNT(*) 造成 O(N²) 查询风暴。 */
+    private static final int PROGRESS_FLUSH_INTERVAL = 50;
+
     private final GrantBatchMapper taskMapper;
     private final GrantBatchErrorMapper failMapper;
-    private final ClaimTicketMapper claimRequestMapper;
     private final OfferPlanService templateService;
     private final VoucherClaimService claimService;
     private final MerchantAccessService merchantAccessService;
-    private final IamUserMapper iamUserMapper;
+    private final IdentityAccountService accountService;
     private final MarketingProperties properties;
 
     public GrantBatchService(GrantBatchMapper taskMapper,
                              GrantBatchErrorMapper failMapper,
-                             ClaimTicketMapper claimRequestMapper,
                              OfferPlanService templateService,
                              VoucherClaimService claimService,
                              MerchantAccessService merchantAccessService,
-                             IamUserMapper iamUserMapper,
+                             IdentityAccountService accountService,
                              MarketingProperties properties) {
         this.taskMapper = taskMapper;
         this.failMapper = failMapper;
-        this.claimRequestMapper = claimRequestMapper;
         this.templateService = templateService;
         this.claimService = claimService;
         this.merchantAccessService = merchantAccessService;
-        this.iamUserMapper = iamUserMapper;
+        this.accountService = accountService;
         this.properties = properties;
     }
 
@@ -74,23 +73,19 @@ public class GrantBatchService {
         if (file == null || file.length == 0) {
             throw new BizException(ErrorCode.VALIDATION, "发券文件不能为空");
         }
-        List<BatchUserRow> rows = read(file);
+        int totalRows = countRowsStreaming(file);
         String batchCode = UUID.randomUUID().toString().replace("-", "");
-        Path path = taskDir().resolve(batchCode + "-" + safeName(originalName));
-        try {
-            Files.write(path, file);
-        } catch (Exception exception) {
-            throw new BizException(ErrorCode.SYSTEM, "发券文件保存失败");
-        }
         GrantBatch task = new GrantBatch();
         task.setMerchantId(merchant.getMerchantId());
         task.setPlanId(template.getId());
         task.setBatchCode(batchCode);
-        task.setFilePath(path.toString());
+        // 原始 Excel 字节持久化到共享数据库，彻底脱离对单机本地磁盘的依赖，支持多实例无状态抢占执行。
+        task.setFilePath("db://" + batchCode + "-" + safeName(originalName));
+        task.setFileContent(file);
         task.setRunAt(runAt == null ? LocalDateTime.now() : runAt);
         task.setStatus(GrantBatchStatus.QUEUED);
         task.setProgress(0);
-        task.setTotalCount(rows.size());
+        task.setTotalCount(totalRows);
         task.setSuccessCount(0);
         task.setFailCount(0);
         taskMapper.insert(task);
@@ -99,14 +94,18 @@ public class GrantBatchService {
 
     public List<GrantBatch> list() {
         var merchant = merchantAccessService.requireMerchant();
+        // 列表查询排除大字段 file_content，避免返回批次列表时拉取大量 Excel 二进制载荷。
         return taskMapper.selectList(Wrappers.<GrantBatch>lambdaQuery()
+                .select(GrantBatch.class, info -> !"file_content".equals(info.getColumn()))
                 .eq(GrantBatch::getMerchantId, merchant.getMerchantId())
                 .orderByDesc(GrantBatch::getId));
     }
 
     public GrantBatch requireOwned(long taskId) {
         var merchant = merchantAccessService.requireMerchant();
-        GrantBatch task = taskMapper.selectById(taskId);
+        GrantBatch task = taskMapper.selectOne(Wrappers.<GrantBatch>lambdaQuery()
+                .select(GrantBatch.class, info -> !"file_content".equals(info.getColumn()))
+                .eq(GrantBatch::getId, taskId));
         if (task == null || !merchant.getMerchantId().equals(task.getMerchantId())) {
             throw new BizException(ErrorCode.NOT_FOUND, "发券任务不存在");
         }
@@ -140,7 +139,9 @@ public class GrantBatchService {
 
     private int scanDue(Executor executor) {
         LocalDateTime now = LocalDateTime.now();
+        // 扫描调度仅需状态与租约列，不拉取 file_content。
         List<GrantBatch> tasks = taskMapper.selectList(Wrappers.<GrantBatch>lambdaQuery()
+                .select(GrantBatch.class, info -> !"file_content".equals(info.getColumn()))
                 .in(GrantBatch::getStatus, GrantBatchStatus.QUEUED, GrantBatchStatus.RUNNING)
                 .and(query -> query.isNull(GrantBatch::getRunAt).or().le(GrantBatch::getRunAt, now)));
         int started = 0;
@@ -171,82 +172,122 @@ public class GrantBatchService {
         if (task == null || !token.equals(task.getOwnerToken())) {
             return;
         }
-        List<BatchUserRow> rows;
+        byte[] payload = loadPayload(task);
+        if (payload == null) {
+            finish(task, token, GrantBatchStatus.FAILED);
+            return;
+        }
+        int expectedTotal = task.getTotalCount() == null ? 0 : task.getTotalCount();
+        AtomicInteger processed = new AtomicInteger();
+        AtomicInteger successCount = new AtomicInteger();
+        AtomicInteger failCount = new AtomicInteger();
+        AtomicBoolean aborted = new AtomicBoolean(false);
+        boolean perRowRenew = !properties.getOffer().getGrantBatchRowDelay().isZero();
+
         try {
-            rows = read(Files.readAllBytes(Path.of(task.getFilePath())));
+            // 流式逐行读取并处理，避免 doReadSync() 一次性把整张表驻留内存，同时在内存累计成功/失败数消除 O(N²) 进度查询。
+            EasyExcel.read(new ByteArrayInputStream(payload), BatchUserRow.class, new ReadListener<BatchUserRow>() {
+                @Override
+                public void invoke(BatchUserRow data, AnalysisContext context) {
+                    if (aborted.get()) {
+                        return;
+                    }
+                    int idx = processed.get();
+                    if ((perRowRenew || idx % PROGRESS_FLUSH_INTERVAL == 0) && !owns(taskId, token)) {
+                        aborted.set(true);
+                        return;
+                    }
+                    if (perRowRenew) {
+                        try {
+                            Thread.sleep(properties.getOffer().getGrantBatchRowDelay().toMillis());
+                        } catch (InterruptedException exception) {
+                            Thread.currentThread().interrupt();
+                            aborted.set(true);
+                            return;
+                        }
+                        if (!owns(taskId, token)) {
+                            aborted.set(true);
+                            return;
+                        }
+                    }
+                    int rowNo = idx + 2;
+                    Long userId = parseUser(data == null ? null : data.getUserId());
+                    if (userId == null) {
+                        if (!recordFail(taskId, token, rowNo, null, "用户编号无效")) {
+                            aborted.set(true);
+                            return;
+                        }
+                        failCount.incrementAndGet();
+                    } else if (!accountService.isUserEnabled(userId)) {
+                        if (!recordFail(taskId, token, rowNo, userId, "用户不存在或已停用")) {
+                            aborted.set(true);
+                            return;
+                        }
+                        failCount.incrementAndGet();
+                    } else {
+                        try {
+                            claimService.claim(userId, task.getPlanId(), IssuerScope.PLATFORM, "b:" + taskId + ":" + rowNo);
+                            if (failMapper.deleteOwned(taskId, rowNo, token) < 0) {
+                                aborted.set(true);
+                                return;
+                            }
+                            successCount.incrementAndGet();
+                        } catch (BizException exception) {
+                            if (!recordFail(taskId, token, rowNo, userId, exception.getMessage())) {
+                                aborted.set(true);
+                                return;
+                            }
+                            failCount.incrementAndGet();
+                        }
+                    }
+                    int doneRows = processed.incrementAndGet();
+                    if (perRowRenew || doneRows % PROGRESS_FLUSH_INTERVAL == 0) {
+                        int total = Math.max(expectedTotal, doneRows);
+                        if (!flushProgress(taskId, token, total, successCount.get(), failCount.get())) {
+                            aborted.set(true);
+                        }
+                    }
+                }
+
+                @Override
+                public void doAfterAllAnalysed(AnalysisContext context) {
+                }
+            }).sheet().doRead();
         } catch (Exception exception) {
             finish(task, token, GrantBatchStatus.FAILED);
             return;
         }
-        for (int index = 0; index < rows.size(); index++) {
-            if (!owns(taskId, token)) {
-                return;
-            }
-            if (!properties.getOffer().getGrantBatchRowDelay().isZero()) {
-                try {
-                    Thread.sleep(properties.getOffer().getGrantBatchRowDelay().toMillis());
-                } catch (InterruptedException exception) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
-            if (!owns(taskId, token)) {
-                return;
-            }
-            int rowNo = index + 2;
-            String raw = rows.get(index).getUserId();
-            Long userId = parseUser(raw);
-            if (userId == null) {
-                if (!recordFail(taskId, token, rowNo, null, "用户编号无效")) {
-                    return;
-                }
-                refreshCounts(taskId, token, rows.size());
-                continue;
-            }
-            IamUser account = iamUserMapper.selectById(userId);
-            if (account == null || account.getStatus() == null || account.getStatus() != IamStatus.ENABLED) {
-                if (!recordFail(taskId, token, rowNo, userId, "用户不存在或已停用")) {
-                    return;
-                }
-                refreshCounts(taskId, token, rows.size());
-                continue;
-            }
-            try {
-                claimService.claim(userId, task.getPlanId(), IssuerScope.PLATFORM, "b:" + taskId + ":" + rowNo);
-                if (failMapper.deleteOwned(taskId, rowNo, token) < 0) {
-                    return;
-                }
-            } catch (BizException exception) {
-                if (!recordFail(taskId, token, rowNo, userId, exception.getMessage())) {
-                    return;
-                }
-            }
-            if (!refreshCounts(taskId, token, rows.size())) {
-                return;
-            }
-        }
-        GrantBatch latest = taskMapper.selectById(taskId);
-        if (latest == null || !token.equals(latest.getOwnerToken())) {
+
+        if (aborted.get()) {
             return;
         }
-        GrantBatchStatus status = latest.getFailCount() == 0
+        int total = Math.max(expectedTotal, processed.get());
+        if (!flushProgress(taskId, token, total, successCount.get(), failCount.get())) {
+            return;
+        }
+        GrantBatchStatus status = failCount.get() == 0
                 ? GrantBatchStatus.DONE
-                : (latest.getSuccessCount() > 0 ? GrantBatchStatus.PARTIAL : GrantBatchStatus.FAILED);
-        finish(latest, token, status);
+                : (successCount.get() > 0 ? GrantBatchStatus.PARTIAL : GrantBatchStatus.FAILED);
+        finish(task, token, status);
+    }
+
+    private byte[] loadPayload(GrantBatch task) {
+        if (task.getFileContent() != null && task.getFileContent().length > 0) {
+            return task.getFileContent();
+        }
+        // 兼容历史未迁移到数据库载荷的记录与本地文件路径测试构造
+        try {
+            return Files.readAllBytes(Path.of(task.getFilePath()));
+        } catch (Exception exception) {
+            return null;
+        }
     }
 
     private boolean owns(long taskId, String token) {
         return taskMapper.renew(taskId, token, LocalDateTime.now().plus(properties.getOffer().getGrantBatchLease()), LocalDateTime.now()) == 1;
     }
 
-    private boolean refreshCounts(long taskId, String token, int total) {
-        String prefix = "b:" + taskId + ":";
-        Long success = claimRequestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
-                .eq(ClaimTicket::getStatus, ClaimTicketStatus.SUCCEEDED)
-                .likeRight(ClaimTicket::getRequestId, prefix));
-        Long failed = failMapper.selectCount(Wrappers.<GrantBatchError>lambdaQuery().eq(GrantBatchError::getBatchId, taskId));
-        int successCount = success == null ? 0 : success.intValue();
-        int failCount = failed == null ? 0 : failed.intValue();
+    private boolean flushProgress(long taskId, String token, int total, int successCount, int failCount) {
         int progress = total == 0 ? 100 : Math.min(100, (successCount + failCount) * 100 / total);
         return taskMapper.saveProgress(taskId, token, total, successCount, failCount, progress, LocalDateTime.now()) == 1;
     }
@@ -266,9 +307,20 @@ public class GrantBatchService {
                 reason == null ? "未知失败" : reason, token, LocalDateTime.now()) == 1;
     }
 
-    private List<BatchUserRow> read(byte[] file) {
+    private int countRowsStreaming(byte[] file) {
+        AtomicInteger count = new AtomicInteger();
         try {
-            return EasyExcel.read(new ByteArrayInputStream(file)).head(BatchUserRow.class).sheet().doReadSync();
+            EasyExcel.read(new ByteArrayInputStream(file), BatchUserRow.class, new ReadListener<BatchUserRow>() {
+                @Override
+                public void invoke(BatchUserRow data, AnalysisContext context) {
+                    count.incrementAndGet();
+                }
+
+                @Override
+                public void doAfterAllAnalysed(AnalysisContext context) {
+                }
+            }).sheet().doRead();
+            return count.get();
         } catch (Exception exception) {
             throw new BizException(ErrorCode.VALIDATION, "无法解析发券文件");
         }
@@ -283,19 +335,6 @@ public class GrantBatchService {
         } catch (NumberFormatException exception) {
             return null;
         }
-    }
-
-    private Path taskDir() {
-        String configured = properties.getOffer().getGrantBatchDir();
-        Path path = (configured == null || configured.isBlank())
-                ? Path.of(System.getProperty("java.io.tmpdir"), "marketing-grant-batches")
-                : Path.of(configured);
-        try {
-            Files.createDirectories(path);
-        } catch (Exception exception) {
-            throw new BizException(ErrorCode.SYSTEM, "发券目录不可用");
-        }
-        return path;
     }
 
     private String safeName(String originalName) {
