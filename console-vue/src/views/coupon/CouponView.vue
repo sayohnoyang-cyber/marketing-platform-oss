@@ -6,6 +6,7 @@
       </div>
       <button class="btn primary" type="button" @click="show = true">＋ 创建券模板</button>
     </div>
+    <p v-if="notice" class="flow-message" role="status">{{ notice }}</p>
     <p v-if="error" class="error">{{ error }} <button class="btn" type="button" @click="load">重试</button></p>
     <p v-if="loading" class="loading">正在读取券库…</p>
     <template v-else-if="!error">
@@ -26,10 +27,13 @@
                 <div class="tk-bar"><i :style="{ width: barWidth(item) }"></i></div>
                 <div class="tk-foot">
                   <span>已投放 {{ formatNumber(putOf(item)) }} / {{ formatNumber(item.issuedTotal) }}</span>
-                  <span>
-                    <router-link v-for="activity in usersOf(item)" :key="activity.id" class="linkbtn" :title="activity.name" :to="`/activities/${activity.id}/pick`">{{ activity.name }}</router-link>
-                    <template v-if="!usersOf(item).length">未用于活动</template>
-                  </span>
+                  <div class="row-actions">
+                    <button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openStock(item)">追加库存</button>
+                    <button class="linkbtn" type="button" @click="openEdit(item)">编辑</button>
+                    <button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openTerminate(item)">停发</button>
+                    <router-link v-for="activity in usersOf(item)" :key="activity.id" class="linkbtn" :title="activity.name" :to="`/activities/${activity.id}/setup`">{{ activity.name }}</router-link>
+                    <span v-if="!usersOf(item).length">未用于活动</span>
+                  </div>
                 </div>
               </div>
             </article>
@@ -37,16 +41,17 @@
           <div v-else class="card">
             <div class="tableoverflow">
               <table>
-                <thead><tr><th>券模板</th><th>规则</th><th>有效期</th><th>发行总量</th><th>已投放</th><th>可投放剩余</th><th>用于活动</th></tr></thead>
+                <thead><tr><th>券模板</th><th>规则</th><th>有效期</th><th>发行总量</th><th>已投放</th><th>可投放剩余</th><th>用于活动</th><th>操作</th></tr></thead>
                 <tbody>
                   <tr v-for="item in records" :key="item.id">
-                    <td><strong>{{ item.name }}</strong></td>
+                    <td><strong>{{ item.title }}</strong><small>{{ item.status === 'open' ? '可选用' : '已停发' }}</small></td>
                     <td>{{ ruleText(item) }}</td>
                     <td>{{ clockLabel(item.usableUntil) }}</td>
                     <td>{{ formatNumber(item.issuedTotal) }}</td>
                     <td>{{ formatNumber(putOf(item)) }}</td>
                     <td>{{ formatNumber(item.inventoryQty) }}</td>
                     <td>{{ usersOf(item).map((activity) => activity.name).join('、') || '未用于活动' }}</td>
+                    <td><div class="row-actions"><button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openStock(item)">追加库存</button><button class="linkbtn" type="button" @click="openEdit(item)">编辑</button><button v-if="item.status === 'open'" class="linkbtn" type="button" @click="openTerminate(item)">停发</button></div></td>
                   </tr>
                 </tbody>
               </table>
@@ -82,7 +87,7 @@
           <div class="card rc">
             <h3>即将到期</h3>
             <p v-if="!soon.length" class="muted">还没有券模板。</p>
-            <div v-for="item in soon" :key="item.id" class="checkrow"><span>{{ item.name }}</span><b class="expire-date">{{ shortEnd(item) }} 到期</b></div>
+            <div v-for="item in soon" :key="item.id" class="checkrow"><span>{{ item.title }}</span><b class="expire-date">{{ shortEnd(item) }} 到期</b></div>
           </div>
 
         </aside>
@@ -106,6 +111,40 @@
         <p v-if="formError" class="error">{{ formError }}</p>
       </form>
     </StudioModal>
+    <StudioModal v-if="stockTarget" title="追加券模板库存" :busy="saving" @close="stockTarget = null">
+      <form @submit.prevent="submitStock">
+        <p class="note">当前券模板：{{ stockTarget.title }}（剩余可投放 {{ formatNumber(stockTarget.inventoryQty) }} 张）</p>
+        <label class="field">追加发行张数<input v-model.number="addStockCount" type="number" min="1" step="1" required /></label>
+        <p v-if="formError" class="form-alert" role="alert">{{ formError }}</p>
+        <div class="actions modal-actions">
+          <button class="btn" type="button" :disabled="saving" @click="stockTarget = null">取消</button>
+          <button class="btn primary" :disabled="saving">{{ saving ? '提交中…' : '确认追加' }}</button>
+        </div>
+      </form>
+    </StudioModal>
+    <StudioModal v-if="editTarget" title="编辑券模板" :busy="saving" @close="editTarget = null">
+      <form class="config-form-grid" @submit.prevent="submitEdit">
+        <label class="field">名称<input v-model.trim="editForm.title" required maxlength="256" /></label>
+        <label class="field">每人总限领<input v-model.number="editForm.limit" type="number" min="1" step="1" required /></label>
+        <label v-if="editTarget.benefitKind === 'percent_off'" class="field">折扣（例如 8.5 折）<input v-model.number="editForm.discount" type="number" min="0.1" max="9.9" step="0.1" required /></label>
+        <label v-if="editTarget.benefitKind !== 'amount_off'" class="field">使用门槛（元）<input v-model.trim="editForm.terms" required /></label>
+        <label class="field">单张最高优惠（元）<input v-model.trim="editForm.amount" required /></label>
+        <label class="field">使用截止<input v-model="editForm.validEnd" type="datetime-local" required /></label>
+        <div class="actions modal-actions">
+          <button class="btn" type="button" :disabled="saving" @click="editTarget = null">取消</button>
+          <button class="btn primary" :disabled="saving">{{ saving ? '保存中…' : '保存修改' }}</button>
+        </div>
+        <p v-if="formError" class="form-alert" role="alert">{{ formError }}</p>
+      </form>
+    </StudioModal>
+    <StudioModal v-if="terminateTarget" title="确认停发券模板？" :busy="saving" @close="terminateTarget = null">
+      <p class="note">停发「{{ terminateTarget.title }}」后，不能再被新活动选用，也不能恢复为可选用；已领取的券仍按原规则正常使用。若该券已关联未结束活动，请先终止对应活动。</p>
+      <p v-if="formError" class="form-alert" role="alert">{{ formError }}</p>
+      <div class="actions modal-actions">
+        <button class="btn" type="button" :disabled="saving" @click="terminateTarget = null">取消</button>
+        <button class="btn primary" type="button" :disabled="saving" @click="confirmTerminate">{{ saving ? '处理中…' : '确认停发' }}</button>
+      </div>
+    </StudioModal>
   </section>
 </template>
 
@@ -115,8 +154,8 @@ import CouponFace from '@/components/CouponFace.vue'
 import StudioModal from '@/components/StudioModal.vue'
 import DotStage from '@/components/DotStage.vue'
 import { listActivities } from '@/api/campaign'
-import { createTemplate, listAllTemplates } from '@/api/coupon'
-import { clockLabel, formatNumber, fromLocalInput, couponRuleText, couponFace } from '@/views/activity/format'
+import { createTemplate, increaseStock, listAllTemplates, reviseTemplate, terminateTemplate } from '@/api/coupon'
+import { clockLabel, formatNumber, fromLocalInput, toLocalInput, couponRuleText, couponFace } from '@/views/activity/format'
 
 export default {
   components: { EmptyState, StudioModal, CouponFace, DotStage },
@@ -124,7 +163,9 @@ export default {
     const end = new Date(Date.now() + 30 * 86400000)
     const pad = (value) => String(value).padStart(2, '0')
     return {
-      records: [], activities: [], loading: false, saving: false, error: '', formError: '', show: false, view: 'cards',
+      records: [], activities: [], loading: false, saving: false, error: '', notice: '', formError: '', show: false, view: 'cards',
+      stockTarget: null, addStockCount: 100, editTarget: null, terminateTarget: null,
+      editForm: { title: '', limit: 1, terms: '0', amount: '10', discount: 8.5, validEnd: '' },
       tones: ['#c6613f', '#788c5d', '#6a9bcc', '#c8a26b', '#8a7fb0'],
       typeLabels: { amount_off: '立减券', amount_off_over: '满减券', percent_off: '折扣券' },
       form: {
@@ -212,9 +253,97 @@ export default {
           benefitPolicy: JSON.stringify({ minSpend: this.form.type === 'amount_off' ? '0' : this.form.terms, capAmount: this.form.amount, ...(this.form.type === 'percent_off' ? { percentOff: (1 - this.form.discount / 10).toFixed(4) } : {}), validityPeriodHours: 72 })
         })
         this.show = false
+        this.notice = '券模板已创建'
         await this.load()
       } catch (error) {
         this.formError = error?.message || '模板保存失败'
+      } finally {
+        this.saving = false
+      }
+    },
+    openStock(item) {
+      this.stockTarget = item
+      this.addStockCount = 100
+      this.formError = ''
+      this.notice = ''
+    },
+    async submitStock() {
+      if (this.saving || !this.stockTarget) return
+      this.saving = true
+      this.formError = ''
+      try {
+        await increaseStock(this.stockTarget.id, Number(this.addStockCount))
+        this.notice = `已为「${this.stockTarget.title}」追加 ${this.addStockCount} 张库存`
+        this.stockTarget = null
+        await this.load()
+      } catch (error) {
+        this.formError = error?.message || '追加库存失败'
+      } finally {
+        this.saving = false
+      }
+    },
+    openEdit(item) {
+      let claim = {}, benefit = {}
+      try { claim = JSON.parse(item.claimPolicy || '{}') } catch { /* 使用默认值 */ }
+      try { benefit = JSON.parse(item.benefitPolicy || '{}') } catch { /* 使用默认值 */ }
+      this.editTarget = item
+      this.formError = ''
+      this.notice = ''
+      this.editForm = {
+        title: item.title || '',
+        limit: Number(claim.maxClaimsPerUser || 1),
+        terms: String(benefit.minSpend ?? '0'),
+        amount: String(benefit.capAmount ?? '10'),
+        discount: benefit.percentOff != null ? Number(((1 - Number(benefit.percentOff)) * 10).toFixed(1)) : 8.5,
+        validEnd: toLocalInput(item.usableUntil)
+      }
+    },
+    async submitEdit() {
+      if (this.saving || !this.editTarget) return
+      this.saving = true
+      this.formError = ''
+      let prevBenefit = {}
+      try { prevBenefit = JSON.parse(this.editTarget.benefitPolicy || '{}') } catch { /* 保留默认结构 */ }
+      const nextBenefit = {
+        ...prevBenefit,
+        minSpend: this.editTarget.benefitKind === 'amount_off' ? '0' : this.editForm.terms,
+        capAmount: this.editForm.amount
+      }
+      if (this.editTarget.benefitKind === 'percent_off') {
+        nextBenefit.percentOff = (1 - Number(this.editForm.discount) / 10).toFixed(4)
+      }
+      try {
+        await reviseTemplate(this.editTarget.id, {
+          title: this.editForm.title,
+          usableUntil: fromLocalInput(this.editForm.validEnd),
+          claimPolicy: JSON.stringify({ maxClaimsPerUser: Number(this.editForm.limit) }),
+          benefitPolicy: JSON.stringify(nextBenefit)
+        })
+        this.notice = `已保存「${this.editForm.title}」的规则修改`
+        this.editTarget = null
+        await this.load()
+      } catch (error) {
+        this.formError = error?.message || '券模板更新失败'
+      } finally {
+        this.saving = false
+      }
+    },
+    openTerminate(item) {
+      this.terminateTarget = item
+      this.formError = ''
+      this.notice = ''
+    },
+    async confirmTerminate() {
+      if (this.saving || !this.terminateTarget) return
+      this.saving = true
+      this.formError = ''
+      try {
+        await terminateTemplate(this.terminateTarget.id)
+        this.notice = `已停发「${this.terminateTarget.title}」`
+        this.terminateTarget = null
+        await this.load()
+      } catch (error) {
+        this.formError = error?.message || '停发失败'
       } finally {
         this.saving = false
       }

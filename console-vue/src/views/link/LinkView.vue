@@ -12,7 +12,7 @@
       <div class="link-aura link-aura-1" aria-hidden="true"></div>
       <div class="link-aura link-aura-2" aria-hidden="true"></div>
       <div class="link-total">
-        <span :title="statsDefinition">全部短链有效访问</span>
+        <span :title="statsDefinition">全部短链点击访客</span>
         <b>{{ formatNumber(summary?.visits) }}</b>
         <small><i></i>实时汇聚</small>
       </div>
@@ -48,7 +48,7 @@
       <EmptyState v-else-if="!rows.length" :title="hasFilters ? '没有匹配的短链' : '暂无短链'"><button v-if="hasFilters" class="btn" @click="clearFilters">清除筛选</button><button v-else class="btn primary" @click="openCreate">创建短链</button></EmptyState>
       <div v-else class="tableoverflow">
           <table class="linktable">
-          <thead><tr><th>名称 / 短链</th><th>归属活动</th><th>类型</th><th>入口访问</th><th>当前状态或页面</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称 / 短链</th><th>归属活动</th><th>类型</th><th>短链点击</th><th>落地页到达</th><th>当前状态或页面</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="item in rows" :key="item.key">
               <td>
@@ -57,11 +57,12 @@
                 <small v-if="item.kind === '普通短链'"><EntryLink :url="item.origin">{{ readable(item.origin) }}</EntryLink></small>
               </td>
               <td>
-                <router-link v-if="item.activityId" class="linkbtn" :to="`/activities/${item.activityId}/link`">{{ item.activityName }}</router-link>
+                <router-link v-if="item.activityId" class="linkbtn" :to="`/activities/${item.activityId}/promote`">{{ item.activityName }}</router-link>
                 <span v-else>不归属活动</span>
               </td>
               <td>{{ item.kind }}</td>
-              <td>{{ formatNumber(item.visits) }}</td>
+              <td>{{ formatNumber(item.clicks ?? item.visits) }}</td>
+              <td>{{ item.kind === '普通短链' ? '—' : formatNumber(item.visits) }}</td>
               <td><span class="pill">{{ item.page }}</span></td>
               <td><div class="row-actions">
                 <button class="linkbtn copy-link" type="button" :disabled="!item.url || copyingUrl === item.url" @click="copy(item.url)">{{ copyingUrl === item.url ? '复制中…' : copiedUrl === item.url ? '已复制' : '复制' }}</button>
@@ -92,7 +93,7 @@
     <StudioModal v-if="editing" title="修改原始链接" :busy="saving" @close="editing = null">
       <form @submit.prevent="saveOrigin"><label class="field">新的原始链接<input v-model.trim="editOrigin" type="url" required /></label><p class="note entry-url">当前：{{ editing.origin }}</p><p v-if="formError" class="form-alert" role="alert">{{ formError }}</p><div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="editing = null">取消</button><button class="btn primary" :disabled="saving">确认修改</button></div></form>
     </StudioModal>
-    <StudioModal v-if="stopping" title="确认停用？" :busy="saving" @close="stopping = null"><p class="note">{{ stopping.kind === '主链' ? '主链停用后，这场活动的所有渠道入口也将失效。已领取的券不受影响。' : '停用后，新的访问无法从这条入口进入。' }}</p><p v-if="formError" class="form-alert">{{ formError }}</p><div class="actions modal-actions"><button class="btn" :disabled="saving" @click="stopping = null">取消</button><button class="btn primary" :disabled="saving" @click="toggle(stopping)">确认停用</button></div></StudioModal>
+    <StudioModal v-if="stopping" title="确认停用？" :busy="saving" @close="stopping = null"><p class="note">{{ stopping.kind === '主链' ? '停用主短链后，通过短链和渠道链接将无法进入，但活动直达页与已领取的券不受影响。' : '停用后，新的访问无法从这条入口进入。' }}</p><p v-if="formError" class="form-alert">{{ formError }}</p><div class="actions modal-actions"><button class="btn" :disabled="saving" @click="stopping = null">取消</button><button class="btn primary" :disabled="saving" @click="toggle(stopping)">确认停用</button></div></StudioModal>
     <StudioModal v-if="manualCopyUrl" title="手动复制链接" @close="manualCopyUrl = ''"><label class="field">短链地址<input :value="manualCopyUrl" readonly @focus="$event.target.select()" /></label></StudioModal>
     <Teleport to="body"><div v-if="copyMessage" class="copy-toast" role="status" aria-live="polite">{{ copyMessage }}</div></Teleport>
   </section>

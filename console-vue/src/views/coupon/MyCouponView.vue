@@ -8,7 +8,7 @@
     <div class="wallet-grid">
       <article v-for="item in records" :key="item.id" class="wallet-coupon" :class="{ inactive: ['redeemed','expired','voided'].includes(item.status) }">
         <div class="wallet-face"><strong><CouponFace :value="couponFace(item.benefitPolicy)" /></strong><span>{{ statusText(item) }}</span></div>
-        <div class="wallet-detail"><h2>{{ item.title }}</h2><p class="wallet-rule">{{ couponRuleText(item.benefitPolicy) }}</p><p>{{ clockLabel(item.usableFrom) }} — {{ clockLabel(item.usableUntil) }}</p><div class="wallet-bottom"><button class="linkbtn wallet-code" @click="copyCode(item.id)">券码 {{ item.id }}</button><div class="actions"><button v-if="item.usable" class="btn" @click="showCode(item)">出示券码</button><button v-if="item.usable" class="btn primary" @click="open(item, 'lock')">使用</button><button v-else-if="item.status === 'held'" class="btn" @click="open(item, 'cancel')">取消锁定</button></div></div></div>
+        <div class="wallet-detail"><h2>{{ item.title }}</h2><p class="wallet-rule">{{ couponRuleText(item.benefitPolicy) }}</p><p>{{ clockLabel(item.usableFrom) }} — {{ clockLabel(item.usableUntil) }}</p><div class="wallet-bottom"><button class="linkbtn wallet-code" @click="copyCode(item.id)">券码 {{ item.id }}</button><div class="actions"><button v-if="item.usable" class="btn primary" @click="showCode(item)">出示核销码</button><button v-else-if="item.status === 'held'" class="btn" @click="openCancel(item)">取消锁定</button></div></div></div>
       </article>
     </div>
     <p v-if="notice" class="flow-message" role="status">{{ notice }}</p>
@@ -17,13 +17,13 @@
       <div class="wallet-qr">
         <img v-if="qrDataUrl" :src="qrDataUrl" alt="优惠券核销码" />
         <strong class="wallet-qr-code">{{ selected?.id }}</strong>
+        <p class="note">结账时向商家出示此二维码或券码即可完成核销</p>
         <div class="actions modal-actions"><button class="btn" type="button" @click="copyCode(selected?.id)">复制券码</button><button class="btn primary" type="button" @click="dialog = ''">关闭</button></div>
       </div>
     </StudioModal>
-    <StudioModal v-else-if="dialog" :title="dialog === 'lock' ? '使用优惠券' : '取消锁定'" :busy="saving" @close="dialog = ''">
-      <form @submit.prevent="submit">
-        <label class="field">订单号<input v-model.trim="form.orderNo" maxlength="64" required :readonly="dialog === 'cancel'" /></label>
-        <template v-if="dialog === 'lock'"><label class="field">订单金额（元）<input v-model="form.orderAmount" type="number" min="0.01" max="9999999999.99" step="0.01" required /></label><label class="field">商品编号（选填）<input v-model.trim="form.goodsNumber" maxlength="64" /></label></template>
+    <StudioModal v-else-if="dialog === 'cancel'" title="取消锁定" :busy="saving" @close="dialog = ''">
+      <form @submit.prevent="submitCancel">
+        <label class="field">订单号<input v-model.trim="cancelOrderNo" maxlength="64" required readonly /></label>
         <p v-if="formError" class="form-alert" role="alert">{{ formError }}</p>
         <div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="dialog = ''">取消</button><button class="btn primary" :disabled="saving">{{ saving ? '保存中…' : '确认' }}</button></div>
       </form>
@@ -35,14 +35,14 @@ import QRCode from 'qrcode'
 import EmptyState from '@/components/EmptyState.vue'
 import CouponFace from '@/components/CouponFace.vue'
 import StudioModal from '@/components/StudioModal.vue'
-import { listMyCoupons, lockCoupon, cancelCoupon, couponSettlements } from '@/api/coupon'
+import { listMyCoupons, cancelCoupon, couponSettlements } from '@/api/coupon'
 import { couponFace, couponRuleText, clockLabel } from '@/views/activity/format'
 import { safeReturn } from '@/views/login/returnTo'
 import { logout } from '@/api/identity'
 import { copyText } from '@/lib/clipboard'
 export default {
   components: { EmptyState, CouponFace, StudioModal },
-  data() { return { records: [], total: 0, page: 0, loading: false, error: '', notice: '', dialog: '', saving: false, selected: null, qrDataUrl: '', formError: '', form: { orderNo: '', orderAmount: '', goodsNumber: '' } } },
+  data() { return { records: [], total: 0, page: 0, loading: false, error: '', notice: '', dialog: '', saving: false, selected: null, qrDataUrl: '', formError: '', cancelOrderNo: '' } },
   computed: { back() { return safeReturn(this.$route.query.return) || (this.$store.state.profile?.merchantId ? '/overview' : '') } },
   created() { this.load(true) },
   methods: {
@@ -76,27 +76,24 @@ export default {
         this.notice = `请手动出示券码：${item.id}`
       }
     },
-    async open(item, kind) {
+    async openCancel(item) {
       this.selected = item; this.formError = ''; this.error = ''
-      this.form = { orderNo: '', orderAmount: '', goodsNumber: '' }
-      if (kind === 'cancel') {
-        try {
-          const response = await couponSettlements(item.id)
-          const locked = (response.data || []).find(row => row.status === 'held')
-          if (!locked) { this.error = '锁定状态已变化，请刷新优惠券'; return }
-          this.form.orderNo = locked.orderNo
-        } catch (error) { this.error = error?.message || '订单读取失败'; return }
-      }
-      this.dialog = kind
+      this.cancelOrderNo = ''
+      try {
+        const response = await couponSettlements(item.id)
+        const locked = (response.data || []).find(row => row.status === 'held')
+        if (!locked) { this.error = '锁定状态已变化，请刷新优惠券'; return }
+        this.cancelOrderNo = locked.orderNo
+      } catch (error) { this.error = error?.message || '订单读取失败'; return }
+      this.dialog = 'cancel'
     },
-    async submit() {
+    async submitCancel() {
       if (this.saving) return
       this.saving = true; this.formError = ''
       try {
-        if (this.dialog === 'lock') await lockCoupon(this.selected.id, { ...this.form, goodsNumber: this.form.goodsNumber || null })
-        else await cancelCoupon(this.selected.id, this.form.orderNo)
+        await cancelCoupon(this.selected.id, this.cancelOrderNo)
         this.dialog = ''; await this.load(true)
-      } catch (error) { this.formError = error?.message || '操作失败' }
+      } catch (error) { this.formError = error?.message || '取消锁定失败' }
       finally { this.saving = false }
     }
   }

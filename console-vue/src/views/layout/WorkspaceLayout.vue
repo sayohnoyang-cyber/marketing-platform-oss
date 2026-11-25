@@ -12,6 +12,8 @@
       <nav>
         <router-link to="/links" @click="open = false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-2 2M14 11a5 5 0 00-7 0l-3 3a5 5 0 007 7l2-2"/></svg>短链管理</router-link>
         <router-link to="/coupons" @click="open = false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7h18v4a3 3 0 000 6v3H3v-3a3 3 0 000-6zM15 7v13"/></svg>券库</router-link>
+        <!-- 将商家核销台提升至主导航，方便高频核销与退款操作直达 -->
+        <router-link v-if="profile?.merchantId" to="/coupon-management" @click="open = false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>优惠券核销</router-link>
         <router-link to="/preview" @click="open = false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 18h4"/></svg>领券页预览</router-link>
       </nav>
       <div class="sidecard spotlight-card" :class="{ 'is-live': spotlightPhase === 'LIVE', 'is-warmup': spotlightPhase === 'WARMUP' }">
@@ -33,7 +35,6 @@
         </button>
         <div v-if="menu" class="menu-pop" @click.stop>
           <router-link to="/my-coupons" @click="close">我的券</router-link>
-          <router-link v-if="profile?.merchantId" to="/coupon-management" @click="close">优惠券核销</router-link>
           <router-link to="/account" @click="close">账号</router-link>
         </div>
       </div>

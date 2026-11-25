@@ -5,7 +5,10 @@
     <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="notice" class="flow-message" role="status">{{ notice }}</p>
     <div v-if="coupon" class="card">
       <div class="tabletop">
-        <div><h2>{{ coupon.title }}</h2><p>{{ couponRuleText(coupon.benefitPolicy) }}</p></div>
+        <div>
+          <h2>{{ coupon.title }} <span class="pill" :class="{ amber: !coupon.usable }">{{ statusText(coupon) }}</span></h2>
+          <p>{{ couponRuleText(coupon.benefitPolicy) }} · 有效期至 {{ clockLabel(coupon.usableUntil) }}</p>
+        </div>
         <button v-if="coupon.usable" class="btn primary" :disabled="saving" @click="openDirect">直接核销</button>
       </div>
       <EmptyState v-if="!coupon.redemptions.length" title="暂无订单记录" />
@@ -14,10 +17,14 @@
     <StudioModal v-if="dialog === 'direct'" title="直接核销优惠券" :busy="saving" @close="dialog = ''">
       <form @submit.prevent="submitDirect">
         <label class="field">订单号<input v-model.trim="directForm.orderNo" maxlength="64" required /></label>
-        <label class="field">订单消费金额（元）<input v-model="directForm.orderAmount" type="number" min="0.01" max="9999999999.99" step="0.01" required /></label>
-        <label class="field">商品编号（选填）<input v-model.trim="directForm.goodsNumber" maxlength="64" /></label>
+        <label class="field">订单消费金额（元）<input v-model="directForm.orderAmount" type="number" min="0.01" max="9999999999.99" step="0.01" required @input="quoteDiscount = null" /></label>
+        <label class="field">商品编号（选填）<input v-model.trim="directForm.goodsNumber" maxlength="64" @input="quoteDiscount = null" /></label>
+        <div v-if="quoteDiscount != null" class="flow-message">
+          <div class="checkrow"><span>预计优惠金额</span><b>-¥{{ Number(quoteDiscount).toFixed(2) }}</b></div>
+          <div class="checkrow"><span>顾客预计实付</span><b>¥{{ Math.max(0, Number(directForm.orderAmount || 0) - Number(quoteDiscount)).toFixed(2) }}</b></div>
+        </div>
         <p v-if="formError" class="form-alert" role="alert">{{ formError }}</p>
-        <div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="dialog = ''">取消</button><button class="btn primary" :disabled="saving">{{ saving ? '核销中…' : '确认核销' }}</button></div>
+        <div class="actions modal-actions"><button class="btn" type="button" :disabled="saving || quoting || !directForm.orderAmount" @click="previewQuote">{{ quoting ? '试算中…' : '试算优惠' }}</button><button class="btn" type="button" :disabled="saving" @click="dialog = ''">取消</button><button class="btn primary" :disabled="saving">{{ saving ? '核销中…' : '确认核销' }}</button></div>
       </form>
     </StudioModal>
     <StudioModal v-else-if="dialog" :title="dialog === 'complete' ? '确认核销' : '记录整单退款'" :busy="saving" @close="dialog = ''"><form @submit.prevent="submit"><div class="checkrow"><span>订单</span><b>{{ selected.orderNo }}</b></div><div class="checkrow"><span>实付金额</span><b>{{ money(paid(selected)) }}</b></div><label v-if="dialog === 'refund'" class="field">实际退款金额（元）<input v-model="refundAmount" type="number" min="0" :max="paid(selected)" step="0.01" required /></label><p v-if="formError" class="form-alert" role="alert">{{ formError }}</p><div class="actions modal-actions"><button class="btn" type="button" :disabled="saving" @click="dialog = ''">取消</button><button class="btn primary" :disabled="saving">{{ saving ? '保存中…' : '确认' }}</button></div></form></StudioModal>
@@ -27,10 +34,10 @@
 import http from '@/api/http'
 import EmptyState from '@/components/EmptyState.vue'
 import StudioModal from '@/components/StudioModal.vue'
-import { couponRuleText } from '@/views/activity/format'
+import { clockLabel, couponRuleText } from '@/views/activity/format'
 export default {
   components: { EmptyState, StudioModal },
-  data() { return { code: '', coupon: null, loading: false, saving: false, error: '', notice: '', dialog: '', selected: null, refundAmount: '', formError: '', directForm: { orderNo: '', orderAmount: '', goodsNumber: '' } } },
+  data() { return { code: '', coupon: null, loading: false, saving: false, quoting: false, quoteDiscount: null, error: '', notice: '', dialog: '', selected: null, refundAmount: '', formError: '', directForm: { orderNo: '', orderAmount: '', goodsNumber: '' } } },
   created() {
     const code = this.$route?.query?.code
     if (code && /^[0-9]+$/.test(String(code))) {
@@ -39,7 +46,11 @@ export default {
     }
   },
   methods: {
-    couponRuleText,
+    clockLabel, couponRuleText,
+    statusText(item) {
+      if (item.status === 'available' && !item.usable) return '未生效'
+      return ({ available: '可使用', held: '使用中', redeemed: '已核销', expired: '已过期', voided: '已作废' })[item.status] || '状态未知'
+    },
     money(value) { return value == null ? '—' : `¥${Number(value).toFixed(2)}` },
     paid(row) { return row.orderAmount == null ? null : (Number(row.orderAmount) - Number(row.discountAmount)).toFixed(2) },
     async lookup() {
@@ -50,9 +61,23 @@ export default {
       finally { this.loading = false }
     },
     openDirect() {
-      this.formError = ''; this.notice = ''
+      this.formError = ''; this.notice = ''; this.quoteDiscount = null
       this.directForm = { orderNo: `POS${Date.now()}`, orderAmount: '', goodsNumber: '' }
       this.dialog = 'direct'
+    },
+    /** 试算优惠金额与顾客实付，便于核销前与消费者当面确认 */
+    async previewQuote() {
+      if (this.quoting || !this.directForm.orderAmount) return
+      this.quoting = true; this.formError = ''; this.quoteDiscount = null
+      try {
+        const res = await http.post(`/merchant/vouchers/${this.coupon.id}/quote`, {
+          orderNo: this.directForm.orderNo || 'QUOTE',
+          orderAmount: this.directForm.orderAmount,
+          goodsNumber: this.directForm.goodsNumber || null
+        })
+        this.quoteDiscount = res.data
+      } catch (error) { this.formError = error?.message || '试算失败' }
+      finally { this.quoting = false }
     },
     async submitDirect() {
       if (this.saving) return

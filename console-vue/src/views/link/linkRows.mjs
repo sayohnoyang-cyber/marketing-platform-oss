@@ -7,6 +7,7 @@ export function linkRows(records) {
       url = parsed.toString()
     }
     return { ...row, key: row.entryKey, url,
+      clicks: row.clicks ?? row.visits ?? 0,
       name: row.kind === 'MAIN' ? `${String(row.name || '').split(' · ')[0]} · 主链` : row.name,
       kind: { MAIN: '主链', CHANNEL: '渠道分支', PLAIN: '普通短链' }[row.kind],
       on: row.onFlag === true, effective: row.effectiveFlag === true }
