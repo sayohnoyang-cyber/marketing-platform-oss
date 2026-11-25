@@ -32,7 +32,18 @@ export default {
     sourceText() { return { HISTORY: '历史到场率', DEFAULT: '默认到场率', SAVED: '已保存参数' }[this.plan?.source] || '情景估算' },
     advice() { return { NO_ACTIVE_ENTRY: '已有预约的入口当前未启用；先恢复推广入口，再更新开场预测。', NO_SAMPLE: '尚无有效预约样本；可先配置推广渠道并完成基础预热。', UNVERIFIED: '当前是预约驱动的估计。预热可提前准备缓存与库存，承载能力仍需实测。', OVER_CAPACITY: '预计压力超过当前安全容量；先评估扩容或入口限流，预热不能替代扩容。', WITHIN_CAPACITY: '按当前假设处于容量范围内，仍需完成缓存、库存和消息检查。' }[this.shown.capacityStatus] || '' },
     actionText() { return { COLLECT_RESERVATIONS: '配置推广渠道', SAVE_FORECAST: '更新预约预测', REVIEW_CAPACITY: '评估容量', RUN_PREPARATION: '执行预热', MONITOR_OPENING: '查看开场情况', REVIEW_ACTIVITY: '查看复盘' }[this.plan?.nextAction] || '查看预测' },
-    actionPath() { const step = { COLLECT_RESERVATIONS: 'link', SAVE_FORECAST: 'forecast', REVIEW_CAPACITY: 'forecast', RUN_PREPARATION: 'prepare', MONITOR_OPENING: 'live', REVIEW_ACTIVITY: 'review' }[this.plan?.nextAction] || 'forecast'; return `/activities/${this.activityId}/${step}` }
+    actionPath() {
+      // 按新工作台 4 视图收拢跳转目标
+      const target = {
+        COLLECT_RESERVATIONS: { path: `/activities/${this.activityId}/promote` },
+        SAVE_FORECAST: { path: `/activities/${this.activityId}/guard`, query: { tab: 'forecast' } },
+        REVIEW_CAPACITY: { path: `/activities/${this.activityId}/guard`, query: { tab: 'forecast' } },
+        RUN_PREPARATION: { path: `/activities/${this.activityId}/guard`, query: { tab: 'prepare' } },
+        MONITOR_OPENING: { path: `/activities/${this.activityId}/analytics` },
+        REVIEW_ACTIVITY: { path: `/activities/${this.activityId}/analytics` }
+      }[this.plan?.nextAction]
+      return target || `/activities/${this.activityId}/guard`
+    }
   },
   watch: { activityId: { immediate: true, handler() { this.plan = null; this.load() } }, version() { this.load() } },
   beforeUnmount() { this.requestToken++ },

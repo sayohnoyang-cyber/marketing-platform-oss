@@ -84,13 +84,14 @@
       </fieldset>
       <aside class="card sumcard">
         <h2>创建摘要</h2>
-        <div class="checkrow"><span>活动主链</span><b>保存后自动生成</b></div>
+        <div class="checkrow"><span>活动直达页</span><b>保存后立即可用</b></div>
+        <div class="checkrow"><span>推广短链</span><b>{{ entryDrafts.length ? '随渠道自动生成' : '按需在推广入口生成' }}</b></div>
         <div class="checkrow"><span>推广入口</span><b>{{ entryDrafts.length }} 个</b></div>
         <div class="summary-amount"><span>最大让利</span><b>{{ maxGive }}</b></div>
         <div class="summary-progress"><span>配置检查</span><b>{{ checks.filter(item => item.ok).length }} / {{ checks.length }}</b><i><u :style="{ width: `${checks.filter(item => item.ok).length / checks.length * 100}%` }"></u></i></div>
         <div v-for="item in checks" :key="item.label" class="checkrow summary-check" :class="{ passed: item.ok }"><i aria-hidden="true">{{ item.ok ? '✓' : '·' }}</i><span>{{ item.label }}</span></div>
 
-        <div v-if="plan" class="save-progress" role="status"><div class="checkrow"><span>活动</span><b>{{ plan.activityId ? '已保存' : '待确认结果' }}</b></div><div class="checkrow"><span>主链</span><b>{{ plan.mainDone ? '已生成' : '待保存' }}</b></div><div v-if="plan.offer" class="checkrow"><span>券投放</span><b>{{ plan.offerDone ? '已保存' : '待保存' }}</b></div><div class="checkrow"><span>推广入口</span><b>{{ plan.channelDone.length }} / {{ plan.channels.length }}</b></div><router-link v-if="plan.activityId" class="linkbtn" :to="`/activities/${plan.activityId}/info`">进入已保存活动 ↗</router-link></div>
+        <div v-if="plan" class="save-progress" role="status"><div class="checkrow"><span>活动</span><b>{{ plan.activityId ? '已保存' : '待确认结果' }}</b></div><div v-if="!plan.mainDone || entryDrafts.length" class="checkrow"><span>推广短链</span><b>{{ plan.mainDone ? '已生成' : '待保存' }}</b></div><div v-if="plan.offer" class="checkrow"><span>券投放</span><b>{{ plan.offerDone ? '已保存' : '待保存' }}</b></div><div class="checkrow"><span>推广入口</span><b>{{ plan.channelDone.length }} / {{ plan.channels.length }}</b></div><router-link v-if="plan.activityId" class="linkbtn" :to="`/activities/${plan.activityId}/setup`">进入已保存活动 ↗</router-link></div>
         <p v-if="error" class="form-alert" role="alert">{{ error }}</p>
         <div class="actions">
           <button class="btn" type="button" :disabled="saving || loading" @click="save(false)">{{ plan ? '继续保存' : '保存草稿' }}</button>
@@ -160,7 +161,7 @@ export default {
         { ok: Boolean(covered), label: '券有效期覆盖活动时间' },
         { ok: Boolean(stockOk), label: '投放数量在可投放范围内' },
         { ok: Boolean(budgetOk), label: `最大让利不超过预算（¥${formatNumber(this.form.budget || 0)}）` },
-        { ok: true, label: '主链可独立推广，渠道可选' }
+        { ok: true, label: '活动直达页立即可用，短链与渠道可选' }
       ]
     }
   },
@@ -323,12 +324,13 @@ export default {
       }
       this.saving = true
       try {
-        if (!this.plan) this.plan = createPlan(this.form, this.entryDrafts)
+        // 仅当用户添加了渠道时自动创建推广主短链，未添加渠道则直接复用活动直达页
+        if (!this.plan) this.plan = createPlan(this.form, this.entryDrafts, { generateMain: this.entryDrafts.length > 0 })
         const id = await savePlan(this.plan, { createActivity, getActivity, openMainLink, saveOffer, addChannel }, this.persistDraft)
         if (this.departed) return
         this.finished = true
         try { localStorage.removeItem(this.storageKey) } catch { /* 服务端保存已完成。 */ }
-        this.$router.push(continueConfig ? `/activities/${id}/link` : '/activities')
+        this.$router.push(continueConfig ? `/activities/${id}/promote` : '/activities')
       } catch (error) {
         this.error = `${error?.message || '保存失败'}；可继续保存，已完成步骤会保留`
         this.persistDraft()

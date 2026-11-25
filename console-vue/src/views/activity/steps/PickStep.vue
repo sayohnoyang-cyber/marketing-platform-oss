@@ -7,7 +7,7 @@
     <div v-else class="pickgrid">
       <div class="card flow-pad">
         <div class="sectionhead flush"><h2>本场优惠券</h2><button class="linkbtn" :disabled="!canChange" @click="picker = true">更换券</button></div>
-        <div class="pickhead"><div class="pn">{{ couponFace(selected?.benefitPolicy || activity.couponRule) }}</div><div><strong>{{ selected?.name || activity.couponName }}</strong><p>{{ couponRuleText(selected?.benefitPolicy || activity.couponRule) }}</p></div></div>
+        <div class="pickhead"><div class="pn">{{ couponFace(selected?.benefitPolicy || activity.couponRule) }}</div><div><strong>{{ selected?.title || activity.couponName }}</strong><p>{{ couponRuleText(selected?.benefitPolicy || activity.couponRule) }}</p></div></div>
         <div class="checkrow"><span>券使用有效期</span><b>{{ clockLabel(selected?.usableUntil || activity.couponValidEndTime) }}</b></div>
         <div class="checkrow"><span>券模板发行总量</span><b>{{ formatNumber(selected?.issuedTotal) }} 张</b></div>
         <div class="checkrow"><span>本场可投放上限</span><b>{{ formatNumber(sliderMax) }} 张</b></div>
@@ -109,6 +109,7 @@ export default {
   },
   methods: {
     clockLabel, formatNumber, leftOf, couponFace, couponRuleText,
+    hasUnsavedChanges() { return this.dirty },
     blank() {
       return {
         planId: this.activity.planId ? String(this.activity.planId) : '',

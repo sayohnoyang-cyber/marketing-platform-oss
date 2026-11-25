@@ -128,7 +128,7 @@
             <div class="meter"><span :style="{ width: capacityPercent == null ? '0%' : `${Math.min(100, capacityPercent)}%` }"></span></div>
             <div class="metertxt"><span>预计压力 / 安全容量</span><span>{{ capacityPercent == null ? '待验证' : `${capacityPercent}%` }}</span></div>
             <div class="divider"></div><div v-for="item in readinessRows" :key="item.label" class="checkrow"><span>{{ item.label }}</span><b :class="{ 'pending-text': !item.ready }" :title="item.detail">{{ item.ready ? '✓ 已就绪' : item.status }}</b></div>
-            <router-link class="linkbtn opening-link" :to="current ? `/activities/${current.id}/forecast` : '/activities/new'">{{ current ? '查看预约预测与准备' : '创建活动并配置预测' }}</router-link>
+            <router-link class="linkbtn opening-link" :to="current ? `/activities/${current.id}/guard` : '/activities/new'">{{ current ? '进入高级保障（预测与预热）' : '创建活动并配置预测' }}</router-link>
           </div>
         </div>
       </div>
@@ -295,10 +295,10 @@ export default {
     phaseText, left: leftOf, formatNumber, clockLabel, activityPath,
     actionText(item) {
       const step = stepFor(item)
-      if (step === 'pick') return '继续配置'
-      if (step === 'live') return '查看领取情况'
-      if (step === 'review') return '查看复盘'
-      return '开场检查'
+      if (step === 'setup') return '继续配置'
+      if (step === 'promote') return '推广入口'
+      if (step === 'analytics') return '查看实时与复盘'
+      return '高级保障'
     },
     rangeText: dayRange,
     countdown(value) {

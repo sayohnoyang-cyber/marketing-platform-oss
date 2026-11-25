@@ -9,7 +9,7 @@
           <h1>{{ activity.name }}</h1>
         </div>
         <div class="actions">
-          <router-link class="btn" :to="`/activities/${activity.id}/info?edit=time`">领取时间</router-link>
+          <router-link class="btn" :to="`/activities/${activity.id}/setup?edit=time`">领取时间</router-link>
           <button v-if="canPublish" class="btn primary" type="button" :disabled="acting" @click="openPublish">{{ activity.publishStatus === 'DRAFT' ? '发布活动' : '重新发布' }}</button>
           <button v-if="canOffline" class="btn" type="button" :disabled="acting" @click="dialog = 'offline'">下线活动</button>
           <button v-if="canTerminate" class="btn" type="button" :disabled="acting" @click="dialog = 'terminate'">终止活动</button>
@@ -20,7 +20,7 @@
             <span class="flow-label">当前活动</span>
             <strong>{{ activity.name }}</strong>
             <span class="pill">{{ phaseText(displayPhase(activity)) }}</span>
-            <p :title="activity.couponName">{{ activity.couponName || '尚未选券' }} · 主链{{ activity.fullShortUrl ? '已生成' : '未生成' }} · {{ activity.enabledChannels || channelCount }} 个有效渠道</p>
+            <p :title="activity.couponName">{{ activity.couponName || '尚未选券' }} · 直达页可用{{ activity.fullShortUrl ? ' · 推广短链已生成' : '' }} · {{ activity.enabledChannels || channelCount }} 个有效渠道</p>
           </div>
           <div class="flow-summary-metrics">
             <span>投放 <b>{{ formatNumber(activity.quantity) }}</b></span>
@@ -29,7 +29,7 @@
           </div>
           <div class="actions">
             <router-link class="btn" :to="`/preview?activity=${activity.id}`">预览用户页面</router-link>
-            <button class="btn" type="button" @click="copyMain">{{ mainLink.fullShortUrl ? '复制主链' : '生成主链' }}</button>
+            <button class="btn" type="button" @click="copyMain">{{ mainLink.fullShortUrl ? '复制主短链' : '复制直达链接' }}</button>
           </div>
         </div>
       <nav ref="stepNavigation" class="stepper" aria-label="活动配置步骤">
@@ -58,7 +58,7 @@
             <div class="checkrow"><span>预算上限</span><b>¥{{ activity.budgetAmount || '—' }}</b></div>
           </div>
           <p v-if="checking" class="muted">正在检查发布条件…</p>
-          <div v-for="item in checks" :key="item.code" class="checkrow"><span>{{ item.passed ? '✓' : '○' }} {{ item.reason || item.code }}</span><router-link v-if="!item.passed && item.fix" class="linkbtn" :to="`/activities/${activity.id}/${item.fix}`" @click="dialog = ''">去完善</router-link><b v-else>{{ item.passed ? '通过' : item.blocking === false ? '提示' : '未通过' }}</b></div>
+          <div v-for="item in checks" :key="item.code" class="checkrow"><span>{{ item.passed ? '✓' : item.blocking === false ? '·' : '○' }} {{ item.reason || checkLabel(item.code) }}</span><router-link v-if="!item.passed && item.fix" class="linkbtn" :to="`/activities/${activity.id}/${item.fix}`" @click="dialog = ''">{{ item.blocking === false ? '去查看' : '去完善' }}</router-link><b v-else>{{ item.passed ? '通过' : item.blocking === false ? '提示' : '未通过' }}</b></div>
           
         </template>
         <p v-else class="note">{{ dialog === 'offline' ? '下线后停止预约和领取，保留本场投放。结束前可重新发布，已领取的券不受影响。' : '终止后不能恢复，未领取数量会退回券模板。已领取的券仍按券规则使用。' }}</p>
@@ -70,7 +70,7 @@
 </template>
 
 <script>
-import { listForecasts, listPreparationRuns, activityChecks, getActivity, offlineActivity, openMainLink, publishActivity, terminateActivity } from '@/api/campaign'
+import { listForecasts, listPreparationRuns, activityChecks, getActivity, offlineActivity, publishActivity, terminateActivity } from '@/api/campaign'
 import { clockLabel, displayPhase, formatNumber, leftOf, phaseText } from './format'
 import StudioModal from '@/components/StudioModal.vue'
 
@@ -98,14 +98,12 @@ export default {
       return this.activity?.allowedActions?.includes('terminate')
     },
     steps() {
+      // 4 步核心工作台：活动配置 -> 推广入口 -> 实时与复盘 -> 高级保障
       return [
-        { path: 'info', label: '基本信息' },
-        { path: 'pick', label: '选券' },
-        { path: 'link', label: '配渠道' },
-        { path: 'forecast', label: '看预测' },
-        { path: 'prepare', label: '预热' },
-        { path: 'live', label: '开场' },
-        { path: 'review', label: '复盘' }
+        { path: 'setup', label: '活动配置' },
+        { path: 'promote', label: '推广入口' },
+        { path: 'analytics', label: '实时与复盘' },
+        { path: 'guard', label: '高级保障' }
       ]
     }
   },
@@ -143,6 +141,9 @@ export default {
       else { this.dialog = ''; this.notice = { publish: '活动已发布', offline: '活动已下线，投放已保留', terminate: '活动已终止' }[action] }
     },
     phaseText, displayPhase, formatNumber, leftOf, clockLabel,
+    checkLabel(code) {
+      return { time: '领取时间已设置', template: '优惠券规则可读取', allocation: '投放库存已分配', 'main-link': '推广主短链已启用', budget: '最大让利在预算内' }[code] || code
+    },
     async load() {
       const id = this.$route.params.activityId
       const token = ++this.requestToken
@@ -207,15 +208,11 @@ export default {
     async copyMain() {
       this.actionError = ''
       try {
-        if (!this.mainLink.fullShortUrl) {
-          await openMainLink(this.activity.id)
-          await this.load()
-          return
-        }
-        await navigator.clipboard.writeText(this.mainLink.fullShortUrl)
-        this.notice = '主链已复制'
+        const target = this.mainLink.fullShortUrl || `${window.location.origin}/a/${this.activity.id}`
+        await navigator.clipboard.writeText(target)
+        this.notice = this.mainLink.fullShortUrl ? '主短链已复制' : '活动直达链接已复制'
       } catch (error) {
-        this.actionError = error?.message || '主链操作失败'
+        this.actionError = error?.message || '链接复制失败，请在推广入口手动复制'
       }
     }
   }

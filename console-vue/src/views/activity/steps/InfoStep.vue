@@ -50,6 +50,7 @@ export default {
   },
   methods: {
     clockLabel,
+    hasUnsavedChanges() { return this.dirty },
     cancelEdit() { this.form = this.blank(); this.editing = false; this.message = '' },
     blank() {
       return {

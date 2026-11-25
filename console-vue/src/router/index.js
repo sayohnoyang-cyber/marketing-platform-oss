@@ -25,14 +25,20 @@ const router = createRouter({
               path: ':activityId',
               component: () => import('@/views/activity/ActivityWorkspace.vue'),
               children: [
-                { path: '', redirect: to => `/activities/${to.params.activityId}/info` },
-                { path: 'info', name: 'activity-info', meta: { title: '基本信息' }, component: () => import('@/views/activity/steps/InfoStep.vue') },
-                { path: 'pick', name: 'activity-pick', meta: { title: '选券' }, component: () => import('@/views/activity/steps/PickStep.vue') },
-                { path: 'link', name: 'activity-link', meta: { title: '配渠道' }, component: () => import('@/views/activity/steps/LinkStep.vue') },
-                { path: 'forecast', name: 'activity-forecast', meta: { title: '看预测' }, component: () => import('@/views/activity/steps/ForecastStep.vue') },
-                { path: 'prepare', name: 'activity-prepare', meta: { title: '预热' }, component: () => import('@/views/activity/steps/PrepareStep.vue') },
-                { path: 'live', name: 'activity-live', meta: { title: '开场' }, component: () => import('@/views/activity/steps/LiveStep.vue') },
-                { path: 'review', name: 'activity-review', meta: { title: '复盘' }, component: () => import('@/views/activity/steps/ReviewStep.vue') }
+                { path: '', redirect: to => `/activities/${to.params.activityId}/setup` },
+                // 新版 4 步工作台路由：活动配置 / 推广入口 / 实时与复盘 / 高级保障
+                { path: 'setup', name: 'activity-setup', meta: { title: '活动配置' }, component: () => import('@/views/activity/steps/SetupStep.vue') },
+                { path: 'promote', name: 'activity-promote', meta: { title: '推广入口' }, component: () => import('@/views/activity/steps/LinkStep.vue') },
+                { path: 'analytics', name: 'activity-analytics', meta: { title: '实时与复盘' }, component: () => import('@/views/activity/steps/AnalyticsStep.vue') },
+                { path: 'guard', name: 'activity-guard', meta: { title: '高级保障' }, component: () => import('@/views/activity/steps/GuardStep.vue') },
+                // 兼容历史 7 步书签与跳转链接
+                { path: 'info', redirect: to => ({ path: `/activities/${to.params.activityId}/setup`, query: to.query }) },
+                { path: 'pick', redirect: to => ({ path: `/activities/${to.params.activityId}/setup`, query: to.query }) },
+                { path: 'link', redirect: to => ({ path: `/activities/${to.params.activityId}/promote`, query: to.query }) },
+                { path: 'forecast', redirect: to => ({ path: `/activities/${to.params.activityId}/guard`, query: { ...to.query, tab: 'forecast' } }) },
+                { path: 'prepare', redirect: to => ({ path: `/activities/${to.params.activityId}/guard`, query: { ...to.query, tab: 'prepare' } }) },
+                { path: 'live', redirect: to => ({ path: `/activities/${to.params.activityId}/analytics`, query: to.query }) },
+                { path: 'review', redirect: to => ({ path: `/activities/${to.params.activityId}/analytics`, query: to.query }) }
               ]
             }
           ]

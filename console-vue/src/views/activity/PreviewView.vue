@@ -1,6 +1,6 @@
 <template>
   <section>
-    <div class="pagehead"><div><h1>领券页预览</h1></div><router-link v-if="activityId" class="btn" :to="`/activities/${activityId}/link`">返回活动入口</router-link></div>
+    <div class="pagehead"><div><h1>领券页预览</h1></div><router-link v-if="activityId" class="btn" :to="`/activities/${activityId}/promote`">返回推广入口</router-link></div>
     <p v-if="error" class="error" role="alert">{{ error }} <button class="linkbtn" @click="loadOne">重试</button></p>
     <p v-if="loading" class="loading">正在读取活动…</p>
     <div v-else-if="!current && !error" class="card"><EmptyState title="暂无可预览的活动"><router-link class="btn primary" to="/activities/new">创建活动</router-link></EmptyState></div>
@@ -15,7 +15,7 @@
           <section class="card settings-card pv-card" style="--tone: #527ea8">
             <div class="preview-sectionhead"><h2>体验设置</h2><span class="section-index" aria-hidden="true">01</span></div>
             <label class="field">当前活动<select v-model="activityId" aria-label="预览活动"><option v-for="item in rows" :key="item.id" :value="String(item.id)">{{ item.name }}</option></select></label>
-            <label class="field">访问来源<select v-model="source" aria-label="访问来源"><option value="direct">主链 · 直接访问</option><option v-for="item in channels" :key="item.id" :value="item.channelCode">{{ item.name }}{{ item.status === 1 ? '' : '（已停用）' }}</option></select></label>
+            <label class="field">访问来源<select v-model="source" aria-label="访问来源"><option value="direct">活动直达页</option><option v-for="item in channels" :key="item.id" :value="item.channelCode">{{ item.name }}{{ item.status === 1 ? '' : '（已停用）' }}</option></select></label>
             <div class="visitor-card"><div class="visitor-identity"><span class="visitor-avatar" aria-hidden="true">{{ String(sandbox.serial).padStart(2, '0') }}</span><div><span>模拟用户</span><b>体验用户 {{ sandbox.serial }}</b></div></div><button class="linkbtn" aria-label="换一位体验用户" @click="newVisitor">换一位 <span aria-hidden="true">↗</span></button></div>
           </section>
           <section class="card inventory-card pv-card" style="--tone: #5b7040">
@@ -71,7 +71,7 @@ export default {
   computed: {
     claimPercent() { return this.sandbox?.quantity > 0 ? Math.min(100, Math.max(0, this.sandbox.claimed / this.sandbox.quantity * 100)) : 0 },
     channels() { return this.current?.channels || [] },
-    sourceLabel() { return this.source === 'direct' ? '主链 · 直接访问' : this.channels.find(item => item.channelCode === this.source)?.name || '未知渠道' },
+    sourceLabel() { return this.source === 'direct' ? '活动直达页' : this.channels.find(item => item.channelCode === this.source)?.name || '未知渠道' },
     person() { return this.sandbox ? previewPerson(this.sandbox) : {} },
     stats() { return this.sandbox ? previewSource(this.sandbox, this.source) : {} },
     remaining() { return Math.max(0, this.sandbox.quantity - this.sandbox.claimed) },
@@ -80,7 +80,7 @@ export default {
       const status = this.current.publishStatus || this.current.phase
       const reasons = { DRAFT: '活动尚未发布', OFFLINE: '活动已下线', CANCELLED: '活动已终止', PAUSED: '活动已暂停' }
       if (reasons[status]) return reasons[status]
-      if (!this.current.fullShortUrl || this.current.mainEnabled === false) return '主链已停用'
+      // 直达页预览不强依赖推广主短链；仅选择外部渠道时检查渠道是否存在与启用
       if (this.source !== 'direct') {
         const channel = this.channels.find(item => item.channelCode === this.source)
         if (!channel) return '渠道不存在'

@@ -17,12 +17,13 @@ export function writeDraft(storage, key, draft) {
   try { storage.setItem(key, JSON.stringify({ ...draft, schema: 1 })); return true } catch { return false }
 }
 
-export function createPlan(form, entries) {
+export function createPlan(form, entries, { generateMain = true } = {}) {
   return {
     payload: { name: form.name, activityType: form.type, budgetAmount: form.budget, startTime: `${form.startDate}:00`, endTime: `${form.endDate}:00`, idempotencyKey: requestId() },
     offer: form.planId ? { planId: form.planId, quantity: form.quantity, maxClaimsPerUser: form.maxClaimsPerUser, budgetAmount: form.budget, idempotencyKey: requestId() } : null,
     channels: entries.map(entry => ({ name: entry.name, channelCode: entry.code || null, idempotencyKey: requestId() })),
-    activityId: '', mainDone: false, offerDone: false, channelDone: []
+    // 未配置渠道且不强制生成主链时跳过 openMainLink，活动直达页默认可用
+    activityId: '', mainDone: !generateMain && !entries.length, offerDone: false, channelDone: []
   }
 }
 

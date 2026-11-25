@@ -82,7 +82,7 @@
                   {{ item.checksPassed || 0 }} / {{ item.checksTotal || 0 }}
                   <div class="cellprogress"><span :style="{ width: readyWidth(item), background: isFullReady(item) ? '#5b7040' : '#b87e18' }"></span></div>
                 </td>
-                <td><router-link class="linkbtn" :to="activityPath(item, 'info')">进入配置</router-link></td>
+                <td><router-link class="linkbtn" :to="activityPath(item, 'setup')">进入配置</router-link></td>
               </tr>
             </tbody>
           </table>

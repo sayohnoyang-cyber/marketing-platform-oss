@@ -31,11 +31,10 @@ export function displayPhase(item) {
 
 export function stepFor(item) {
   const phase = displayPhase(item)
-  if (phase === 'DRAFT') return 'pick'
-  if (phase === 'LIVE' || phase === 'SOLDOUT') return 'live'
-  if (phase === 'ENDED' || phase === 'CANCELLED') return 'review'
-  if (phase === 'OFFLINE') return 'prepare'
-  return 'prepare'
+  if (phase === 'DRAFT') return 'setup'
+  if (phase === 'LIVE' || phase === 'SOLDOUT' || phase === 'ENDED' || phase === 'CANCELLED') return 'analytics'
+  if (phase === 'WARMUP') return 'promote'
+  return 'setup'
 }
 
 export function activityPath(item, step) {
