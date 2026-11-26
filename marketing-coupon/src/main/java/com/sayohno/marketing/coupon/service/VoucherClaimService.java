@@ -119,23 +119,7 @@ public class VoucherClaimService {
             }
             throw new BizException(ErrorCode.CONFLICT, "同一请求正在处理，请稍后用原请求号重试");
         }
-        ClaimTicket current = requestMapper.selectById(request.getId());
-        OfferInventory allocation = requireOpenAllocation(inventoryId, current.getId(), token);
-        int[] counts = reserveAllocationStock(template, allocation, current, userId, token, false);
-        // 在同一小事务中锁定 RESERVED 状态并写入异步落库事件，保证预扣后不会丢失发券任务；事务失败时立即回补 Redis。
-        try {
-            transactionTemplate.executeWithoutResult(status -> {
-                if (requestMapper.markReserved(current.getId(), token, counts[0], counts[1], LocalDateTime.now()) != 1) {
-                    throw new BizException(ErrorCode.CONFLICT, "领取预扣状态已被其他执行者接管");
-                }
-                outboxStore.append("claim-async:" + current.getId() + ":" + token, ASYNC_CLAIM_EVENT,
-                        String.valueOf(current.getId()),
-                        "{\"requestRowId\":" + current.getId() + ",\"token\":\"" + token + "\"}");
-            });
-        } catch (RuntimeException exception) {
-            stockGateway.compensateAllocation(inventoryId, template.getId(), userId, counts[0], counts[1], current.getId());
-            throw exception;
-        }
+        reserveOwned(request.getId(), template, token, true);
         return new ClaimReceipt(trimmedRequestId, "RESERVED", null, null);
     }
 
@@ -156,51 +140,19 @@ public class VoucherClaimService {
         if (current.getInventoryId() == null || current.getInventoryId() <= 0) {
             return;
         }
-        // 若消息延迟超过租约期，尝试重新获取租约以免与 recoverStuck 并发竞争。
-        String activeToken = token;
-        if (activeToken == null || !activeToken.equals(current.getReservationToken())) {
-            activeToken = UUID.randomUUID().toString().replace("-", "");
-            if (!lease(requestRowId, activeToken)) {
-                return;
-            }
-            current = requestMapper.selectById(requestRowId);
-            if (current == null || current.getStatus() == ClaimTicketStatus.SUCCEEDED || current.getStatus() == ClaimTicketStatus.FAILED) {
-                return;
-            }
-        }
-        Integer templateCount = current.getClaimSeq();
-        Integer allocCount = current.getAllocReceiveCount();
-        if (templateCount == null || allocCount == null) {
-            HoldMark hold = stockGateway.readAllocationHold(current.getPlanId(), current.getInventoryId(), requestRowId);
-            if (hold == null) {
-                requestMapper.markFailed(requestRowId, activeToken, LocalDateTime.now());
-                return;
-            }
-            templateCount = hold.templateCount();
-            allocCount = hold.allocCount();
-        }
-        OfferPlan template = templateMapper.selectById(current.getPlanId());
-        LocalDateTime now = LocalDateTime.now();
-        if (template == null || template.getStatus() != OfferPlanStatus.OPEN
-                || now.isBefore(template.getUsableFrom()) || now.isAfter(template.getUsableUntil())) {
-            compensateAllocationAndFail(requestRowId, current.getInventoryId(), current.getPlanId(),
-                    current.getUserId(), templateCount, allocCount, activeToken);
+        if (token == null || !token.equals(current.getReservationToken())) {
+            // 已接管的票据由新持有者继续处理，旧消息无需再次竞争租约。
             return;
         }
         try {
+            OfferPlan template = loadOpenTemplate(current.getPlanId());
             IssuerScope source = current.getIssuerScope() == null ? IssuerScope.MERCHANT : current.getIssuerScope();
-            commit(requestRowId, current.getUserId(), template, source, templateCount);
-            long planId = current.getPlanId();
-            long inventoryId = current.getInventoryId();
-            releaseCommittedHold(requestRowId, () -> stockGateway.releaseAllocationHold(planId, inventoryId, requestRowId));
-        } catch (BizException bizException) {
-            // 仅对明确不可恢复的业务终态（超限、库存不足、投放关闭）回补 Redis 并标 FAILED；冲突类异常保留重试机会。
-            if (bizException.getErrorCode() == ErrorCode.VALIDATION || bizException.getErrorCode() == ErrorCode.NOT_FOUND) {
-                compensateAllocationAndFail(requestRowId, current.getInventoryId(), template.getId(),
-                        current.getUserId(), templateCount, allocCount, activeToken);
-                return;
+            commitAndRelease(current, template, source, token);
+        } catch (BizException exception) {
+            if (!terminalFailure(exception)) {
+                throw exception;
             }
-            throw bizException;
+            failOwned(requestRowId, token);
         }
     }
 
@@ -258,7 +210,7 @@ public class VoucherClaimService {
             }
             throw new BizException(ErrorCode.CONFLICT, "同一请求正在处理，请稍后用原请求号重试");
         }
-        return finishOwned(template, request.getId(), userId, source, token);
+        return finishOwned(template, request.getId(), source, token);
     }
 
     public int recoverStuck(Duration olderThan) {
@@ -276,17 +228,15 @@ public class VoucherClaimService {
             if (!lease(request.getId(), token)) {
                 continue;
             }
-            OfferPlan template = templateMapper.selectById(request.getPlanId());
-            if (template == null) {
-                compensateAndFail(request.getId(), request.getPlanId(), request.getUserId(), request.getClaimSeq(), token);
-                continue;
-            }
             try {
-                finishOwned(template, request.getId(), request.getUserId(),
+                OfferPlan template = loadOpenTemplate(request.getPlanId());
+                finishOwned(template, request.getId(),
                         request.getIssuerScope() == null ? IssuerScope.MERCHANT : request.getIssuerScope(), token);
                 recovered++;
-            } catch (RuntimeException exception) {
-                compensateAndFail(request.getId(), request.getPlanId(), request.getUserId(), request.getClaimSeq(), token);
+            } catch (BizException exception) {
+                if (terminalFailure(exception)) {
+                    failOwned(request.getId(), token);
+                }
             }
         }
         return recovered;
@@ -314,60 +264,73 @@ public class VoucherClaimService {
                         .orderByDesc(IssuedVoucher::getId));
     }
 
-    private IssuedVoucher finishOwned(OfferPlan template, long requestRowId, long userId, IssuerScope source, String token) {
-        ClaimTicket current = requestMapper.selectById(requestRowId);
-        if (current.getInventoryId() != null && current.getInventoryId() > 0) {
-            return finishAllocation(template, current, userId, source, token);
-        }
-        Integer hold = stockGateway.readHold(template.getId(), requestRowId);
-        int claimSeq;
-        if (current.getStatus() == ClaimTicketStatus.RESERVED && current.getClaimSeq() != null) {
-            claimSeq = current.getClaimSeq();
-        } else if (hold != null) {
-            claimSeq = hold;
-            if (requestMapper.markReserved(requestRowId, token, claimSeq, null, LocalDateTime.now()) != 1) {
-                throw new BizException(ErrorCode.CONFLICT, "领取预扣状态已被其他执行者接管");
-            }
-        } else {
-            int limit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
-            long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
-            StockDecision decision = stockGateway.tryAcquire(template.getId(), userId, limit, template.getInventoryQty(), ttl, requestRowId);
-            if (!decision.ok()) {
-                requestMapper.markFailed(requestRowId, token, LocalDateTime.now());
-                throw stockError(decision);
-            }
-            claimSeq = decision.claimSeq();
-            if (requestMapper.markReserved(requestRowId, token, claimSeq, null, LocalDateTime.now()) != 1) {
-                stockGateway.compensate(template.getId(), userId, claimSeq, requestRowId);
-                throw new BizException(ErrorCode.CONFLICT, "领取预扣状态已被其他执行者接管");
-            }
-        }
-        IssuedVoucher coupon;
+    private IssuedVoucher finishOwned(OfferPlan template, long requestRowId, IssuerScope source, String token) {
+        ClaimTicket ticket = reserveOwned(requestRowId, template, token, false);
         try {
-            coupon = commit(requestRowId, userId, template, source, claimSeq);
-        } catch (RuntimeException exception) {
-            compensateAndFail(requestRowId, template.getId(), userId, claimSeq, token);
+            return commitAndRelease(ticket, template, source, token);
+        } catch (BizException exception) {
+            if (terminalFailure(exception)) {
+                failOwned(requestRowId, token);
+            }
             throw exception;
         }
-        releaseCommittedHold(requestRowId, () -> stockGateway.releaseHold(template.getId(), requestRowId));
-        return coupon;
     }
 
-    private IssuedVoucher finishAllocation(OfferPlan template, ClaimTicket current, long userId, IssuerScope source, String token) {
-        long inventoryId = current.getInventoryId();
-        long requestRowId = current.getId();
-        OfferInventory allocation = requireOpenAllocation(inventoryId, requestRowId, token);
-        int[] counts = reserveAllocationStock(template, allocation, current, userId, token, true);
-        int templateCount = counts[0];
-        int allocCount = counts[1];
-        IssuedVoucher coupon;
+    private static boolean terminalFailure(BizException exception) {
+        return exception.getErrorCode() == ErrorCode.VALIDATION || exception.getErrorCode() == ErrorCode.NOT_FOUND;
+    }
+
+    private ClaimTicket reserveOwned(long id, OfferPlan template, String token, boolean async) {
         try {
-            coupon = commit(requestRowId, userId, template, source, templateCount);
-        } catch (RuntimeException exception) {
-            compensateAllocationAndFail(requestRowId, inventoryId, template.getId(), userId, templateCount, allocCount, token);
+            return transactionTemplate.execute(status -> {
+                ClaimTicket ticket = requestMapper.lockById(id);
+                requireOwner(ticket, token);
+                if (ticket.getStatus() == ClaimTicketStatus.PENDING) {
+                    StockDecision decision;
+                    if (ticket.getInventoryId() != null && ticket.getInventoryId() > 0) {
+                        OfferInventory allocation = allocationMapper.selectById(ticket.getInventoryId());
+                        if (allocation == null || allocation.getStatus() != InventoryStatus.OPEN) {
+                            throw new BizException(ErrorCode.VALIDATION, "投放不可用");
+                        }
+                        decision = reserveAllocationStock(template, allocation, ticket, ticket.getUserId());
+                    } else {
+                        int limit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
+                        decision = stockGateway.tryAcquire(template.getId(), ticket.getUserId(), limit,
+                                template.getInventoryQty(), reservationTtl(template), id);
+                    }
+                    if (!decision.ok()) {
+                        throw stockError(decision);
+                    }
+                    Integer allocationCount = ticket.getInventoryId() != null && ticket.getInventoryId() > 0
+                            ? decision.allocCount() : null;
+                    if (requestMapper.markReserved(id, token, decision.claimSeq(), allocationCount, LocalDateTime.now()) != 1) {
+                        throw lostLease();
+                    }
+                }
+                if (async) {
+                    outboxStore.append("claim-async:" + id + ":" + token, ASYNC_CLAIM_EVENT, String.valueOf(id),
+                            "{\"requestRowId\":" + id + ",\"token\":\"" + token + "\"}");
+                }
+                return ticket;
+            });
+        } catch (BizException exception) {
+            if (terminalFailure(exception)) {
+                failOwned(id, token);
+            }
             throw exception;
         }
-        releaseCommittedHold(requestRowId, () -> stockGateway.releaseAllocationHold(template.getId(), inventoryId, requestRowId));
+    }
+
+    private IssuedVoucher commitAndRelease(ClaimTicket ticket, OfferPlan template, IssuerScope source, String token) {
+        long id = ticket.getId();
+        IssuedVoucher coupon = commit(id, ticket.getUserId(), template, source, token);
+        releaseCommittedHold(id, () -> {
+            if (ticket.getInventoryId() != null && ticket.getInventoryId() > 0) {
+                stockGateway.releaseAllocationHold(template.getId(), ticket.getInventoryId(), id);
+            } else {
+                stockGateway.releaseHold(template.getId(), id);
+            }
+        });
         return coupon;
     }
 
@@ -380,29 +343,12 @@ public class VoucherClaimService {
         }
     }
 
-    private OfferInventory requireOpenAllocation(long inventoryId, long requestRowId, String token) {
-        OfferInventory allocation = allocationMapper.selectById(inventoryId);
-        if (allocation == null || allocation.getStatus() != InventoryStatus.OPEN) {
-            requestMapper.markFailed(requestRowId, token, LocalDateTime.now());
-            throw new BizException(ErrorCode.VALIDATION, "投放不可用");
-        }
-        return allocation;
+    private long reservationTtl(OfferPlan template) {
+        return Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
     }
 
-    private int[] reserveAllocationStock(OfferPlan template, OfferInventory allocation, ClaimTicket current,
-                                         long userId, String token, boolean markImmediately) {
+    private StockDecision reserveAllocationStock(OfferPlan template, OfferInventory allocation, ClaimTicket current, long userId) {
         long inventoryId = allocation.getId();
-        long requestRowId = current.getId();
-        HoldMark hold = stockGateway.readAllocationHold(template.getId(), inventoryId, requestRowId);
-        if (current.getStatus() == ClaimTicketStatus.RESERVED && current.getClaimSeq() != null && current.getAllocReceiveCount() != null) {
-            return new int[]{current.getClaimSeq(), current.getAllocReceiveCount()};
-        }
-        if (hold != null) {
-            if (markImmediately && requestMapper.markReserved(requestRowId, token, hold.templateCount(), hold.allocCount(), LocalDateTime.now()) != 1) {
-                throw new BizException(ErrorCode.CONFLICT, "领取预扣状态已被其他执行者接管");
-            }
-            return new int[]{hold.templateCount(), hold.allocCount()};
-        }
         int templateLimit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
         // 仅当 Redis 库存键尚未初始化时才回源查询数据库剩余并扣除在途 RESERVED 票据；
         // 缓存已热时 Lua 不会读取兜底库存参数，跳过 COUNT(*) 可显著降低秒杀热路径的数据库压力。
@@ -414,18 +360,8 @@ public class VoucherClaimService {
             remaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount()
                     - (inFlight == null ? 0 : inFlight.intValue()));
         }
-        long ttl = Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
-        StockDecision decision = stockGateway.tryAcquireAllocation(inventoryId, template.getId(), userId,
-                allocation.getMaxClaimsPerUser(), templateLimit, remaining, ttl, requestRowId);
-        if (!decision.ok()) {
-            requestMapper.markFailed(requestRowId, token, LocalDateTime.now());
-            throw stockError(decision);
-        }
-        if (markImmediately && requestMapper.markReserved(requestRowId, token, decision.claimSeq(), decision.allocCount(), LocalDateTime.now()) != 1) {
-            stockGateway.compensateAllocation(inventoryId, template.getId(), userId, decision.claimSeq(), decision.allocCount(), requestRowId);
-            throw new BizException(ErrorCode.CONFLICT, "领取预扣状态已被其他执行者接管");
-        }
-        return new int[]{decision.claimSeq(), decision.allocCount()};
+        return stockGateway.tryAcquireAllocation(inventoryId, template.getId(), userId,
+                allocation.getMaxClaimsPerUser(), templateLimit, remaining, reservationTtl(template), current.getId());
     }
 
     private static String validateRequestId(String requestId) {
@@ -442,31 +378,44 @@ public class VoucherClaimService {
                 : userId + "|" + templateId + "|" + inventoryId + "|" + scope);
     }
 
-    private void compensateAndFail(long requestRowId, long templateId, long userId, Integer claimSeq, String token) {
-        ClaimTicket row = requestMapper.selectById(requestRowId);
-        if (row != null && row.getInventoryId() != null && row.getInventoryId() > 0) {
-            compensateAllocationAndFail(requestRowId, row.getInventoryId(), templateId, userId,
-                    claimSeq, row.getAllocReceiveCount(), token);
-            return;
+    private void failOwned(long id, String token) {
+        // 先持久化失败，再退还预扣。进程中断后，同一请求重试会先清理残留标记。
+        if (requestMapper.markFailed(id, token, LocalDateTime.now()) == 1) {
+            transactionTemplate.executeWithoutResult(status -> {
+                ClaimTicket row = requestMapper.lockById(id);
+                if (row.getStatus() == ClaimTicketStatus.FAILED) {
+                    releaseFailedReservation(row);
+                }
+            });
         }
-        if (claimSeq != null) {
-            int compensated = stockGateway.compensate(templateId, userId, claimSeq, requestRowId);
-            if (compensated == 0 && stockGateway.readHold(templateId, requestRowId) != null) {
-                return;
-            }
-        }
-        requestMapper.markFailed(requestRowId, token, LocalDateTime.now());
     }
 
-    private void compensateAllocationAndFail(long requestRowId, long inventoryId, long templateId, long userId,
-                                             Integer templateCount, Integer allocCount, String token) {
-        if (templateCount != null && allocCount != null) {
-            int compensated = stockGateway.compensateAllocation(inventoryId, templateId, userId, templateCount, allocCount, requestRowId);
-            if (compensated == 0 && stockGateway.readAllocationHold(templateId, inventoryId, requestRowId) != null) {
-                return;
+    private void releaseFailedReservation(ClaimTicket row) {
+        long plan = row.getPlanId();
+        long id = row.getId();
+        if (row.getInventoryId() != null && row.getInventoryId() > 0) {
+            long inventory = row.getInventoryId();
+            HoldMark hold = stockGateway.readAllocationHold(plan, inventory, id);
+            if (hold != null) {
+                stockGateway.compensateAllocation(inventory, plan, row.getUserId(), hold.templateCount(), hold.allocCount(), id);
+            }
+        } else {
+            Integer hold = stockGateway.readHold(plan, id);
+            if (hold != null) {
+                stockGateway.compensate(plan, row.getUserId(), hold, id);
             }
         }
-        requestMapper.markFailed(requestRowId, token, LocalDateTime.now());
+    }
+
+    private void requireOwner(ClaimTicket row, String token) {
+        if (row == null || !token.equals(row.getReservationToken())
+                || (row.getStatus() != ClaimTicketStatus.PENDING && row.getStatus() != ClaimTicketStatus.RESERVED)) {
+            throw lostLease();
+        }
+    }
+
+    private BizException lostLease() {
+        return new BizException(ErrorCode.CONFLICT, "领取票据已由其他执行者处理");
     }
 
     private boolean lease(long id, String token) {
@@ -474,12 +423,13 @@ public class VoucherClaimService {
         return requestMapper.acquireLease(id, token, now.plus(properties.getOffer().getClaimRecoverAfter()), now) == 1;
     }
 
-    private IssuedVoucher commit(long requestId, long userId, OfferPlan template, IssuerScope source, int claimSeq) {
+    private IssuedVoucher commit(long requestId, long userId, OfferPlan template, IssuerScope source, String token) {
         return transactionTemplate.execute(status -> {
-            ClaimTicket current = requestMapper.selectById(requestId);
+            ClaimTicket current = requestMapper.lockById(requestId);
             if (current != null && current.getStatus() == ClaimTicketStatus.SUCCEEDED) {
                 return userMapper.selectById(current.getVoucherId());
             }
+            requireOwner(current, token);
             long inventoryId = current.getInventoryId() == null ? 0L : current.getInventoryId();
             int limit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
             Long owned = userMapper.selectCount(Wrappers.<IssuedVoucher>lambdaQuery()
@@ -523,13 +473,9 @@ public class VoucherClaimService {
             } catch (DataIntegrityViolationException exception) {
                 throw new BizException(ErrorCode.CONFLICT, "领取记录冲突，请使用原请求重试");
             }
-            current.setStatus(ClaimTicketStatus.SUCCEEDED);
-            current.setVoucherId(coupon.getId());
-            current.setClaimSeq(dbClaimSeq);
-            current.setRedisApplied(1);
-            current.setReservationToken(null);
-            current.setLeaseUntil(null);
-            requestMapper.updateById(current);
+            if (requestMapper.succeed(requestId, token, coupon.getId(), dbClaimSeq, now) != 1) {
+                throw lostLease();
+            }
             outboxStore.append("claim:" + current.getId(), CLAIM_EVENT, String.valueOf(coupon.getId()),
                     "{\"voucherId\":" + coupon.getId() + ",\"templateId\":" + template.getId() + "}");
             return coupon;
@@ -562,16 +508,15 @@ public class VoucherClaimService {
             throw new BizException(ErrorCode.CONFLICT, "同一幂等键的参数不一致");
         }
         if (existing.getStatus() == ClaimTicketStatus.FAILED) {
-            boolean held = inventoryId == 0
-                    ? stockGateway.readHold(templateId, existing.getId()) != null
-                    : stockGateway.readAllocationHold(templateId, inventoryId, existing.getId()) != null;
-            if (!held) {
-                existing.setStatus(ClaimTicketStatus.PENDING);
-                existing.setRedisApplied(0);
-                existing.setReservationToken(null);
-                existing.setLeaseUntil(null);
-                requestMapper.updateById(existing);
-            }
+            long id = existing.getId();
+            transactionTemplate.executeWithoutResult(status -> {
+                ClaimTicket row = requestMapper.lockById(id);
+                if (row.getStatus() == ClaimTicketStatus.FAILED) {
+                    releaseFailedReservation(row);
+                    requestMapper.reopenFailed(id, LocalDateTime.now());
+                }
+            });
+            return requestMapper.selectById(id);
         }
         return existing;
     }
