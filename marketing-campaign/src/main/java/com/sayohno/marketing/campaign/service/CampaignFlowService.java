@@ -32,8 +32,8 @@ import com.sayohno.marketing.coupon.service.OfferPlanService;
 import com.sayohno.marketing.identity.service.MerchantAccessService;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.dao.entity.LinkGroup;
-import com.sayohno.marketing.shortlink.dao.mapper.LinkAccessLogMapper;
 import com.sayohno.marketing.shortlink.service.LinkDirectoryService;
+import com.sayohno.marketing.shortlink.service.LinkStatisticsService;
 import com.sayohno.marketing.shortlink.service.PublicLinkAddress;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -64,7 +64,7 @@ public class CampaignFlowService {
     private final CampaignClaimIntentMapper intentMapper;
     private final CampaignConversionMapper conversionMapper;
     private final LinkDirectoryService linkDirectoryService;
-    private final LinkAccessLogMapper linkAccessLogMapper;
+    private final LinkStatisticsService linkStatisticsService;
     private final VoucherClaimService claimService;
     private final OfferInventoryService allocationService;
     private final MerchantAccessService merchantAccessService;
@@ -85,7 +85,7 @@ public class CampaignFlowService {
                                CampaignClaimIntentMapper intentMapper,
                                CampaignConversionMapper conversionMapper,
                                LinkDirectoryService linkDirectoryService,
-                               LinkAccessLogMapper linkAccessLogMapper,
+                               LinkStatisticsService linkStatisticsService,
                                VoucherClaimService claimService,
                                OfferInventoryService allocationService,
                                MerchantAccessService merchantAccessService,
@@ -94,7 +94,7 @@ public class CampaignFlowService {
                                Clock clock, OfferPlanService templateService, CampaignRateLimitService rateLimits, CampaignPageCache pageCache,
                                PlatformTransactionManager transactionManager) {
         this(campaignService, channelMapper, visitMapper, reservationMapper, couponMapper, intentMapper,
-                conversionMapper, linkDirectoryService, linkAccessLogMapper, claimService, allocationService,
+                conversionMapper, linkDirectoryService, linkStatisticsService, claimService, allocationService,
                 merchantAccessService, properties, outboxStore, clock, templateService, rateLimits, pageCache,
                 transactionManager, null);
     }
@@ -108,7 +108,7 @@ public class CampaignFlowService {
                                CampaignClaimIntentMapper intentMapper,
                                CampaignConversionMapper conversionMapper,
                                LinkDirectoryService linkDirectoryService,
-                               LinkAccessLogMapper linkAccessLogMapper,
+                               LinkStatisticsService linkStatisticsService,
                                VoucherClaimService claimService,
                                OfferInventoryService allocationService,
                                MerchantAccessService merchantAccessService,
@@ -126,7 +126,7 @@ public class CampaignFlowService {
         this.intentMapper = intentMapper;
         this.conversionMapper = conversionMapper;
         this.linkDirectoryService = linkDirectoryService;
-        this.linkAccessLogMapper = linkAccessLogMapper;
+        this.linkStatisticsService = linkStatisticsService;
         this.claimService = claimService;
         this.allocationService = allocationService;
         this.merchantAccessService = merchantAccessService;
@@ -760,9 +760,10 @@ public class CampaignFlowService {
         List<CampaignChannel> channels = channelMapper.selectList(Wrappers.<CampaignChannel>lambdaQuery()
                 .eq(CampaignChannel::getActivityId, activityId));
         Long mainLinkId = activity.getMainLinkId();
+        Map<String, Long> clicksByChannel = mainLinkId == null ? Map.of() : linkStatisticsService.uniqueClicksByChannel(mainLinkId);
         List<Map<String, Object>> rows = new java.util.ArrayList<>(channels.stream()
-                .map(channel -> channelStats(activityId, mainLinkId, channel.getId(), channel.getChannelCode(), channel.getName(), "CHANNEL")).toList());
-        rows.add(channelStats(activityId, mainLinkId, null, null, "直接访问", "DIRECT"));
+                .map(channel -> channelStats(activityId, clicksByChannel, channel.getId(), channel.getChannelCode(), channel.getName(), "CHANNEL")).toList());
+        rows.add(channelStats(activityId, clicksByChannel, null, null, "直接访问", "DIRECT"));
         return rows;
     }
 
@@ -904,7 +905,7 @@ public class CampaignFlowService {
         body.put("attributedClaims", attributed);
         body.put("reconciled", claimed instanceof Number number && number.longValue() == attributed);
         addRefundSummary(body, activityId, null, false);
-        long clicks = activity.getMainLinkId() == null ? 0L : linkAccessLogMapper.uniqueLinkClicks(activity.getMainLinkId());
+        long clicks = activity.getMainLinkId() == null ? 0L : linkStatisticsService.uniqueLinkClicks(activity.getMainLinkId());
         long visits = visitMapper.uniqueActivityVisitors(activityId);
         long reservations = activeReservations(activityId);
         long redeems = countActivity(activityId, "REDEEM");
@@ -932,13 +933,13 @@ public class CampaignFlowService {
         return body;
     }
 
-    private Map<String, Object> channelStats(long activityId, Long mainLinkId, Long channelId, String channelCode, String name, String kind) {
+    private Map<String, Object> channelStats(long activityId, Map<String, Long> clicksByChannel, Long channelId, String channelCode, String name, String kind) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("channelId", channelId);
         row.put("name", name);
         row.put("kind", kind);
         row.put("enabled", channelId == null || channelMapper.selectById(channelId).getStatus() == 1);
-        row.put("clicks", mainLinkId == null ? 0L : linkAccessLogMapper.uniqueClicks(mainLinkId, channelCode));
+        row.put("clicks", clicksByChannel.getOrDefault(channelCode == null ? "" : channelCode, 0L));
         row.put("visits", visitMapper.uniqueVisitors(activityId, channelId));
         row.put("claims", countMatched(activityId, channelId, "CLAIM"));
         row.put("redeems", countMatched(activityId, channelId, "REDEEM"));

@@ -158,4 +158,22 @@ class AuthenticationFilterTest {
         assertEquals(401, expired.getStatus());
         assertEquals("past-max", deletedToken.get());
     }
+
+    @Test
+    void honorsInjectedPublicEndpointPolicySpiWithoutHardcodedRoutes() throws Exception {
+        SessionStore store = mock(SessionStore.class);
+        IdentityContextLoader loader = mock(IdentityContextLoader.class);
+        com.sayohno.marketing.common.web.PublicEndpointPolicy customPolicy = req -> "/api/custom-open".equals(req.getRequestURI());
+        AuthenticationFilter filter = new AuthenticationFilter(
+                store, loader, new ObjectMapper(), new MarketingProperties(), java.util.List.of(customPolicy));
+
+        MockHttpServletResponse openRes = new MockHttpServletResponse();
+        filter.doFilter(new MockHttpServletRequest("GET", "/api/custom-open"), openRes, (req, res) -> {});
+        assertEquals(200, openRes.getStatus());
+
+        // 未声明在 SPI 中的旧公开路径应被拒绝，证明过滤器不再硬编码上层路由
+        MockHttpServletResponse blockedRes = new MockHttpServletResponse();
+        filter.doFilter(new MockHttpServletRequest("GET", "/s/abc"), blockedRes, (req, res) -> {});
+        assertEquals(401, blockedRes.getStatus());
+    }
 }

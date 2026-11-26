@@ -8,6 +8,7 @@ import com.sayohno.marketing.common.result.ErrorCode;
 import com.sayohno.marketing.common.result.RequestIds;
 import com.sayohno.marketing.common.result.Result;
 import com.sayohno.marketing.common.result.Results;
+import com.sayohno.marketing.common.web.PublicEndpointPolicy;
 import com.sayohno.marketing.identity.service.IdentityContextLoader;
 import com.sayohno.marketing.identity.session.SessionStore;
 import com.sayohno.marketing.identity.session.UserSession;
@@ -16,6 +17,8 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
@@ -25,6 +28,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Component
@@ -34,15 +38,38 @@ public class AuthenticationFilter extends OncePerRequestFilter {
     private final IdentityContextLoader contextLoader;
     private final ObjectMapper objectMapper;
     private final MarketingProperties properties;
+    private final List<PublicEndpointPolicy> publicPolicies;
 
+    /**
+     * 仅供未经过 Spring 容器装配的单元测试构造器使用；生产环境下由各模块通过 PublicEndpointPolicy SPI 自动注入。
+     */
     public AuthenticationFilter(SessionStore sessionStore,
                                 IdentityContextLoader contextLoader,
                                 ObjectMapper objectMapper,
                                 MarketingProperties properties) {
+        this(sessionStore, contextLoader, objectMapper, properties, defaultTestPolicies());
+    }
+
+    @Autowired
+    public AuthenticationFilter(SessionStore sessionStore,
+                                IdentityContextLoader contextLoader,
+                                ObjectMapper objectMapper,
+                                MarketingProperties properties,
+                                ObjectProvider<List<PublicEndpointPolicy>> policiesProvider) {
+        this(sessionStore, contextLoader, objectMapper, properties,
+                policiesProvider == null ? List.of() : policiesProvider.getIfAvailable(List::of));
+    }
+
+    public AuthenticationFilter(SessionStore sessionStore,
+                                IdentityContextLoader contextLoader,
+                                ObjectMapper objectMapper,
+                                MarketingProperties properties,
+                                List<PublicEndpointPolicy> publicPolicies) {
         this.sessionStore = sessionStore;
         this.contextLoader = contextLoader;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.publicPolicies = publicPolicies == null ? List.of() : List.copyOf(publicPolicies);
     }
 
     @Override
@@ -56,10 +83,7 @@ public class AuthenticationFilter extends OncePerRequestFilter {
         response.setHeader(RequestIds.HEADER, requestId);
         try {
             if (isPublic(request)) {
-                String path = request.getRequestURI();
-                boolean activityEntry = "/api/public/activities/entry".equals(path)
-                        || path.matches("/api/public/activities/\\d+/(visit|status)");
-                String optionalToken = activityEntry ? readToken(request) : null;
+                String optionalToken = supportsOptionalAuth(request) ? readToken(request) : null;
                 if (optionalToken != null) {
                     UserSession session = sessionStore.find(optionalToken).orElse(null);
                     Duration renewTtl = session == null ? null : effectiveTtl(session);
@@ -116,15 +140,36 @@ public class AuthenticationFilter extends OncePerRequestFilter {
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
             return true;
         }
-        String path = request.getRequestURI();
-        return "/api/health".equals(path)
-                || "/api/identity/login".equals(path)
-                || "/api/identity/register".equals(path)
-                || "/error".equals(path)
-                || ("GET".equalsIgnoreCase(request.getMethod()) && path.startsWith("/s/"))
-                || ("GET".equalsIgnoreCase(request.getMethod()) && path.matches("/a/\\d+"))
-                || "/api/public/activities/entry".equals(path)
-                || ("POST".equalsIgnoreCase(request.getMethod()) && path.matches("/api/public/activities/\\d+/(visit|status)"));
+        return publicPolicies.stream().anyMatch(policy -> policy.isPublic(request));
+    }
+
+    private boolean supportsOptionalAuth(HttpServletRequest request) {
+        return publicPolicies.stream().anyMatch(policy -> policy.supportsOptionalAuth(request));
+    }
+
+    private static List<PublicEndpointPolicy> defaultTestPolicies() {
+        return List.of(
+                new IdentityPublicEndpointPolicy(),
+                new PublicEndpointPolicy() {
+                    @Override
+                    public boolean isPublic(HttpServletRequest request) {
+                        String path = request.getRequestURI();
+                        String method = request.getMethod();
+                        return "/api/health".equals(path)
+                                || "/error".equals(path)
+                                || ("GET".equalsIgnoreCase(method) && (path.startsWith("/s/") || path.matches("/a/\\d+")))
+                                || "/api/public/activities/entry".equals(path)
+                                || ("POST".equalsIgnoreCase(method) && path.matches("/api/public/activities/\\d+/(visit|status)"));
+                    }
+
+                    @Override
+                    public boolean supportsOptionalAuth(HttpServletRequest request) {
+                        String path = request.getRequestURI();
+                        return "/api/public/activities/entry".equals(path)
+                                || path.matches("/api/public/activities/\\d+/(visit|status)");
+                    }
+                }
+        );
     }
 
     private boolean isMerchantPath(HttpServletRequest request) {
