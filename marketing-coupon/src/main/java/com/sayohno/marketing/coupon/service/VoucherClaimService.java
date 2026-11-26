@@ -24,6 +24,8 @@ import com.sayohno.marketing.coupon.enums.VoucherStatus;
 import com.sayohno.marketing.coupon.stock.HoldMark;
 import com.sayohno.marketing.coupon.stock.OfferStockGateway;
 import com.sayohno.marketing.coupon.stock.StockDecision;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -37,6 +39,7 @@ import java.util.UUID;
 
 @Service
 public class VoucherClaimService {
+    private static final Logger log = LoggerFactory.getLogger(VoucherClaimService.class);
     public static final String CLAIM_EVENT = "coupon.claim";
     public static final String ASYNC_CLAIM_EVENT = "coupon.claim.async";
     private final OfferPlanMapper templateMapper;
@@ -187,7 +190,9 @@ public class VoucherClaimService {
         try {
             IssuerScope source = current.getIssuerScope() == null ? IssuerScope.MERCHANT : current.getIssuerScope();
             commit(requestRowId, current.getUserId(), template, source, templateCount);
-            stockGateway.releaseAllocationHold(current.getPlanId(), current.getInventoryId(), requestRowId);
+            long planId = current.getPlanId();
+            long inventoryId = current.getInventoryId();
+            releaseCommittedHold(requestRowId, () -> stockGateway.releaseAllocationHold(planId, inventoryId, requestRowId));
         } catch (BizException bizException) {
             // 仅对明确不可恢复的业务终态（超限、库存不足、投放关闭）回补 Redis 并标 FAILED；冲突类异常保留重试机会。
             if (bizException.getErrorCode() == ErrorCode.VALIDATION || bizException.getErrorCode() == ErrorCode.NOT_FOUND) {
@@ -337,17 +342,15 @@ public class VoucherClaimService {
                 throw new BizException(ErrorCode.CONFLICT, "领取预扣状态已被其他执行者接管");
             }
         }
+        IssuedVoucher coupon;
         try {
-            IssuedVoucher coupon = commit(requestRowId, userId, template, source, claimSeq);
-            stockGateway.releaseHold(template.getId(), requestRowId);
-            return coupon;
+            coupon = commit(requestRowId, userId, template, source, claimSeq);
         } catch (RuntimeException exception) {
             compensateAndFail(requestRowId, template.getId(), userId, claimSeq, token);
-            if (exception instanceof BizException biz) {
-                throw biz;
-            }
             throw exception;
         }
+        releaseCommittedHold(requestRowId, () -> stockGateway.releaseHold(template.getId(), requestRowId));
+        return coupon;
     }
 
     private IssuedVoucher finishAllocation(OfferPlan template, ClaimTicket current, long userId, IssuerScope source, String token) {
@@ -357,16 +360,23 @@ public class VoucherClaimService {
         int[] counts = reserveAllocationStock(template, allocation, current, userId, token, true);
         int templateCount = counts[0];
         int allocCount = counts[1];
+        IssuedVoucher coupon;
         try {
-            IssuedVoucher coupon = commit(requestRowId, userId, template, source, templateCount);
-            stockGateway.releaseAllocationHold(template.getId(), inventoryId, requestRowId);
-            return coupon;
+            coupon = commit(requestRowId, userId, template, source, templateCount);
         } catch (RuntimeException exception) {
             compensateAllocationAndFail(requestRowId, inventoryId, template.getId(), userId, templateCount, allocCount, token);
-            if (exception instanceof BizException biz) {
-                throw biz;
-            }
             throw exception;
+        }
+        releaseCommittedHold(requestRowId, () -> stockGateway.releaseAllocationHold(template.getId(), inventoryId, requestRowId));
+        return coupon;
+    }
+
+    private void releaseCommittedHold(long ticketId, Runnable release) {
+        try {
+            release.run();
+        } catch (RuntimeException exception) {
+            // 数据库已确认发券。残留标记带有 TTL，清理失败不能触发库存补偿。
+            log.warn("领券已成功，预扣标记等待过期。ticketId={}", ticketId, exception);
         }
     }
 
