@@ -13,7 +13,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  integration:
+    name: 验证真实 MySQL 与 Redis 链路
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.0.36
+        env:
+          MYSQL_DATABASE: marketing
+          MYSQL_ROOT_PASSWORD: ci-test-only
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+      redis:
+        image: redis:7.2
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: 运行集成测试
+        env:
+          MARKETING_IT: 'true'
+          MYSQL_PASSWORD: ci-test-only
+          REDIS_PORT: '6379'
+        run: ./mvnw -B -ntp -pl marketing-app -am test '-Dtest=*IT' -Dsurefire.failIfNoSpecifiedTests=false
+
   deploy:
+    needs: integration
     if: github.repository == 'sayohnoyang-cyber/marketing-platform-oss'
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -28,11 +63,10 @@ jobs:
           java-version: '17'
           cache: maven
 
-      # 测试依赖 MySQL/Redis 容器，这里只打包；测试请在本地或单独的 CI 里跑
       - name: Build backend jar
         run: |
           chmod +x mvnw
-          ./mvnw -B -ntp -DskipTests package
+          ./mvnw -B -ntp package
           ls -lh marketing-app/target/*.jar
 
       - uses: actions/setup-node@v4
@@ -48,6 +82,7 @@ jobs:
           VITE_PUBLIC_SHORTLINK_ORIGIN: https://sayohno.cn
         run: |
           npm ci
+          npm run test:models
           npm run build
 
       - name: Assemble release bundle
