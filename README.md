@@ -50,13 +50,6 @@ cp .env.example .env
 ```bash
 docker compose up -d
 
-# 按文件名顺序执行全部迁移（当前为 V001 至 V015）
-set -a && . ./.env && set +a
-mysql -h 127.0.0.1 -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" \
-  -e "CREATE DATABASE IF NOT EXISTS marketing DEFAULT CHARACTER SET utf8mb4"
-for migration in marketing-app/src/main/resources/db/V*.sql; do
-  mysql -h 127.0.0.1 -P "${MYSQL_PORT:-3306}" -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" marketing < "$migration" || break
-done
 ```
 
 ### 3. 启动后端
@@ -69,7 +62,7 @@ set -a && . ./.env && set +a
 - 服务地址：`http://127.0.0.1:9100`
 - 业务探活：`GET http://127.0.0.1:9100/api/health`（检测 MySQL、Redis 与 Outbox 积压/死信状态，核心依赖异常时返回 HTTP 503）
 - Actuator 探针：`GET http://127.0.0.1:9100/actuator/health`（暴露 `health`、`info`、`metrics`，支持优雅停机 `server.shutdown=graceful`）
-- 数据库迁移：后端启动时由 Flyway 自动执行 `classpath:db` 下的增量脚本（默认开启 `FLYWAY_ENABLED=true`，存量库自动基线 `FLYWAY_BASELINE_VERSION=0`）
+- 数据库迁移：后端启动时由 Flyway 自动执行 `classpath:db` 下的增量脚本（默认开启 `FLYWAY_ENABLED=true`，空库由应用初始化。已有数据且缺少 Flyway 历史表时，先备份并核对实际迁移版本，再为首次启动显式设置 `FLYWAY_BASELINE_ON_MIGRATE=true` 和对应的 `FLYWAY_BASELINE_VERSION`）
 - RocketMQ：`docker-compose.yml` 已包含 `rocketmq-namesrv` 与 `rocketmq-broker`（默认开启 `autoCreateTopicEnable=true`）
 
 ### 4. 启动前端控制台
@@ -89,7 +82,7 @@ npm run dev
 | `MYSQL_URL` / `MYSQL_USER` / `MYSQL_PASSWORD` | 数据库连接，密码必填，没有默认值 |
 | `MYSQL_PORT` | compose 映射的 MySQL 端口，默认 3306 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis 连接；无密码可留空 |
-| `FLYWAY_ENABLED` / `FLYWAY_BASELINE_VERSION` | Flyway 自动迁移开关与基线版本（默认 `true` / `0`） |
+| `FLYWAY_ENABLED` / `FLYWAY_BASELINE_VERSION` | Flyway 自动迁移开关与基线版本（默认启用迁移，存量库基线需显式开启） |
 | `SERVER_PORT` | 后端端口，默认 9100 |
 | `SHORTLINK_PUBLIC_BASE_URL` | 短链对外访问前缀 |
 | `VITE_PUBLIC_SHORTLINK_ORIGIN` | 前端展示短链时使用的对外地址 |

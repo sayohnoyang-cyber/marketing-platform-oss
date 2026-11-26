@@ -13,22 +13,6 @@ services:
       - --default-authentication-plugin=mysql_native_password
     volumes:
       - marketing-mysql:/var/lib/mysql
-      - ./marketing-app/src/main/resources/db/V001__init.sql:/docker-entrypoint-initdb.d/V001__init.sql:ro
-      - ./marketing-app/src/main/resources/db/V002__claim_outbox_task.sql:/docker-entrypoint-initdb.d/V002__claim_outbox_task.sql:ro
-      - ./marketing-app/src/main/resources/db/V003__claim_lease.sql:/docker-entrypoint-initdb.d/V003__claim_lease.sql:ro
-      - ./marketing-app/src/main/resources/db/V004__campaign.sql:/docker-entrypoint-initdb.d/V004__campaign.sql:ro
-      - ./marketing-app/src/main/resources/db/V005__allocation_main_link.sql:/docker-entrypoint-initdb.d/V005__allocation_main_link.sql:ro
-      - ./marketing-app/src/main/resources/db/V006__campaign_operations.sql:/docker-entrypoint-initdb.d/V006__campaign_operations.sql:ro
-      - ./marketing-app/src/main/resources/db/V007__link_name.sql:/docker-entrypoint-initdb.d/V007__link_name.sql:ro
-      - ./marketing-app/src/main/resources/db/V008__simple_workspace_activity.sql:/docker-entrypoint-initdb.d/V008__simple_workspace_activity.sql:ro
-      - ./marketing-app/src/main/resources/db/V009__refund_amount_attendance.sql:/docker-entrypoint-initdb.d/V009__refund_amount_attendance.sql:ro
-      - ./marketing-app/src/main/resources/db/V010__external_link_activity.sql:/docker-entrypoint-initdb.d/V010__external_link_activity.sql:ro
-      - ./marketing-app/src/main/resources/db/V011__campaign_create_request.sql:/docker-entrypoint-initdb.d/V011__campaign_create_request.sql:ro
-      - ./marketing-app/src/main/resources/db/V012__offer_domain_rename.sql:/docker-entrypoint-initdb.d/V012__offer_domain_rename.sql:ro
-      - ./marketing-app/src/main/resources/db/V013__offer_enum_and_policy_keys.sql:/docker-entrypoint-initdb.d/V013__offer_enum_and_policy_keys.sql:ro
-      - ./marketing-app/src/main/resources/db/V014__rename_inventory_claim_limit.sql:/docker-entrypoint-initdb.d/V014__rename_inventory_claim_limit.sql:ro
-      - ./marketing-app/src/main/resources/db/V015__link_access_channel_code.sql:/docker-entrypoint-initdb.d/V015__link_access_channel_code.sql:ro
-      - ./marketing-app/src/main/resources/db/V016__grant_batch_payload_and_distributed_lock.sql:/docker-entrypoint-initdb.d/V016__grant_batch_payload_and_distributed_lock.sql:ro
 
   redis:
     image: redis:7.2

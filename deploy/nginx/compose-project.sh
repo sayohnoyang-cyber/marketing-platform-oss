@@ -31,11 +31,14 @@ resolve_compose_file() {
 
 # 需要已设置 BASE 和 COMPOSE_FILE。HTTPS 覆盖文件存在时一并带上。
 run_compose() {
-  if [ -f "$BASE/docker-compose.https.yml" ]; then
-    command docker compose -f "$COMPOSE_FILE" -f "$BASE/docker-compose.https.yml" "$@"
-  else
-    command docker compose -f "$COMPOSE_FILE" "$@"
+  local -a files=(-f "$COMPOSE_FILE")
+  if [ -f "$BASE/compose.deploy.yml" ]; then
+    files+=(-f "$BASE/compose.deploy.yml")
   fi
+  if [ -f "$BASE/docker-compose.https.yml" ]; then
+    files+=(-f "$BASE/docker-compose.https.yml")
+  fi
+  command docker compose "${files[@]}" "$@"
 }
 
 # nginx -s reload 后旧 worker 还会再应答一小段时间。

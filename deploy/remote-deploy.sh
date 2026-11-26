@@ -27,6 +27,13 @@ COMPOSE_FILE=$(resolve_compose_file "$BASE") || { echo "找不到 compose.yaml �
 # HTTPS 启用后还要带上 docker-compose.https.yml，否则重建容器会丢掉 443 和证书挂载。
 exec 9>/tmp/marketing-deploy.lock
 flock -n 9 || { echo "另一个部署正在进行"; exit 1; }
+# 此发布流程通过 deploy_schema_history 运行迁移，应用启动时跳过 Flyway。
+cat > "$BASE/compose.deploy.yml" <<'YAML'
+services:
+  app:
+    environment:
+      SPRING_FLYWAY_ENABLED: "false"
+YAML
 set -a; . ./.env; set +a
 mysqlq() { run_compose exec -T -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql mysql -uroot --default-character-set=utf8mb4 marketing "$@"; }
 
