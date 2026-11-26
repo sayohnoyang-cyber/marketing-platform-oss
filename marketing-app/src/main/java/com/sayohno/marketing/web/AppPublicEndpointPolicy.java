@@ -13,6 +13,9 @@ public class AppPublicEndpointPolicy implements PublicEndpointPolicy {
     @Override
     public boolean isPublic(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return "/api/health".equals(path) || "/actuator/health".equals(path) || "/error".equals(path);
+        return "/api/health".equals(path)
+                || "/actuator/health".equals(path)
+                || path.startsWith("/actuator/health/")
+                || "/error".equals(path);
     }
 }

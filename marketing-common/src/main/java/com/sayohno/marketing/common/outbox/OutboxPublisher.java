@@ -1,6 +1,10 @@
 package com.sayohno.marketing.common.outbox;
 
 import com.sayohno.marketing.common.config.MarketingProperties;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -13,11 +17,28 @@ public class OutboxPublisher {
     private final OutboxEventMapper mapper;
     private final OutboxTransport transport;
     private final MarketingProperties properties;
+    private final Counter deliveredCounter;
+    private final Counter failedCounter;
 
     public OutboxPublisher(OutboxEventMapper mapper, OutboxTransport transport, MarketingProperties properties) {
+        this(mapper, transport, properties, null);
+    }
+
+    @Autowired
+    public OutboxPublisher(OutboxEventMapper mapper,
+                           OutboxTransport transport,
+                           MarketingProperties properties,
+                           ObjectProvider<MeterRegistry> meterRegistryProvider) {
         this.mapper = mapper;
         this.transport = transport;
         this.properties = properties;
+        MeterRegistry registry = meterRegistryProvider == null ? null : meterRegistryProvider.getIfAvailable();
+        this.deliveredCounter = registry == null ? null : Counter.builder("marketing.outbox.delivered")
+                .description("Outbox 投递成功消息数")
+                .register(registry);
+        this.failedCounter = registry == null ? null : Counter.builder("marketing.outbox.failed")
+                .description("Outbox 投递失败进入重试或死信数")
+                .register(registry);
     }
 
     @Scheduled(fixedDelayString = "${OUTBOX_PUBLISH_DELAY:200}")
@@ -67,6 +88,9 @@ public class OutboxPublisher {
                 transport.dispatch(event);
                 sentIds.add(event.getId());
             } catch (RuntimeException exception) {
+                if (failedCounter != null) {
+                    failedCounter.increment();
+                }
                 String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
                 if (message.length() > 500) {
                     message = message.substring(0, 500);
@@ -85,6 +109,9 @@ public class OutboxPublisher {
                 for (Long sentId : sentIds) {
                     mapper.markSent(sentId, sentAt);
                 }
+            }
+            if (deliveredCounter != null) {
+                deliveredCounter.increment(sentIds.size());
             }
         }
         return new BatchOutcome(due.size(), sentIds.size());

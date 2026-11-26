@@ -24,7 +24,7 @@
         <java.version>17</java.version>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-boot.version>3.0.7</spring-boot.version>
+        <spring-boot.version>3.3.10</spring-boot.version>
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
         <easyexcel.version>4.0.1</easyexcel.version>
         <rocketmq.version>2.3.0</rocketmq.version>
@@ -70,7 +70,7 @@
             </dependency>
             <dependency>
                 <groupId>com.baomidou</groupId>
-                <artifactId>mybatis-plus-boot-starter</artifactId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
                 <version>${mybatis-plus.version}</version>
             </dependency>
             <dependency>

@@ -67,7 +67,10 @@ set -a && . ./.env && set +a
 ```
 
 - 服务地址：`http://127.0.0.1:9100`
-- 健康检查：`GET http://127.0.0.1:9100/api/health`
+- 业务探活：`GET http://127.0.0.1:9100/api/health`（检测 MySQL、Redis 与 Outbox 积压/死信状态，核心依赖异常时返回 HTTP 503）
+- Actuator 探针：`GET http://127.0.0.1:9100/actuator/health`（暴露 `health`、`info`、`metrics`，支持优雅停机 `server.shutdown=graceful`）
+- 数据库迁移：后端启动时由 Flyway 自动执行 `classpath:db` 下的增量脚本（默认开启 `FLYWAY_ENABLED=true`，存量库自动基线 `FLYWAY_BASELINE_VERSION=0`）
+- RocketMQ：`docker-compose.yml` 已包含 `rocketmq-namesrv` 与 `rocketmq-broker`（默认开启 `autoCreateTopicEnable=true`）
 
 ### 4. 启动前端控制台
 
@@ -86,6 +89,7 @@ npm run dev
 | `MYSQL_URL` / `MYSQL_USER` / `MYSQL_PASSWORD` | 数据库连接，密码必填，没有默认值 |
 | `MYSQL_PORT` | compose 映射的 MySQL 端口，默认 3306 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Redis 连接；无密码可留空 |
+| `FLYWAY_ENABLED` / `FLYWAY_BASELINE_VERSION` | Flyway 自动迁移开关与基线版本（默认 `true` / `0`） |
 | `SERVER_PORT` | 后端端口，默认 9100 |
 | `SHORTLINK_PUBLIC_BASE_URL` | 短链对外访问前缀 |
 | `VITE_PUBLIC_SHORTLINK_ORIGIN` | 前端展示短链时使用的对外地址 |

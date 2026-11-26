@@ -24,7 +24,7 @@ public class ShortLinkRedisConfig {
     @Bean(destroyMethod = "shutdown")
     public RedissonClient redissonClient(RedisProperties redisProperties) {
         Config config = new Config();
-        boolean ssl = redisProperties.isSsl();
+        boolean ssl = redisProperties.getSsl() != null && redisProperties.getSsl().isEnabled();
         String scheme = ssl ? "rediss://" : "redis://";
 
         if (redisProperties.getCluster() != null && !CollectionUtils.isEmpty(redisProperties.getCluster().getNodes())) {

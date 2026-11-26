@@ -114,4 +114,16 @@ public interface OutboxEventMapper extends BaseMapper<OutboxEvent> {
             WHERE status = 2 AND update_time < #{cutoff}
             """)
     int deleteExpiredSent(@Param("cutoff") LocalDateTime cutoff);
+
+    @Select("""
+            SELECT COUNT(*) FROM infra_outbox_event
+            WHERE status IN (0, 1)
+            """)
+    long countPending();
+
+    @Select("""
+            SELECT COUNT(*) FROM infra_outbox_event
+            WHERE status = 3
+            """)
+    long countDead();
 }

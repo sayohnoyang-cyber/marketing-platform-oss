@@ -1,9 +1,12 @@
 server:
   port: ${SERVER_PORT:9100}
+  shutdown: graceful
 
 spring:
   application:
     name: marketing-platform
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   task:
     scheduling:
       pool:
@@ -13,6 +16,11 @@ spring:
   autoconfigure:
     exclude:
       - org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    locations: classpath:db
+    baseline-on-migrate: true
+    baseline-version: ${FLYWAY_BASELINE_VERSION:0}
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/marketing?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${MYSQL_USER:root}
@@ -75,6 +83,16 @@ marketing:
     grant-batch-lease: ${OFFER_GRANT_BATCH_LEASE:2m}
     grant-batch-row-delay: ${OFFER_GRANT_BATCH_ROW_DELAY:0s}
     grant-batch-dir: ${OFFER_GRANT_BATCH_DIR:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
 
 logging:
   pattern:

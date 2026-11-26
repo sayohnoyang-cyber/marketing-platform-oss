@@ -11,12 +11,16 @@ import com.sayohno.marketing.shortlink.bloom.BloomReadPolicy;
 import com.sayohno.marketing.shortlink.dao.entity.Link;
 import com.sayohno.marketing.shortlink.dao.mapper.LinkMapper;
 import com.sayohno.marketing.shortlink.redis.ShortLinkRedisKeys;
+import io.micrometer.core.instrument.FunctionCounter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PreDestroy;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -66,6 +70,19 @@ public class RedirectService {
                            OutboxStore outboxStore,
                            ObjectMapper objectMapper,
                            PlatformTransactionManager transactionManager) {
+        this(linkMapper, properties, bloomReadPolicy, redisson, redis, outboxStore, objectMapper, transactionManager, null);
+    }
+
+    @Autowired
+    public RedirectService(LinkMapper linkMapper,
+                           MarketingProperties properties,
+                           BloomReadPolicy bloomReadPolicy,
+                           ObjectProvider<RedissonClient> redisson,
+                           ObjectProvider<StringRedisTemplate> redis,
+                           OutboxStore outboxStore,
+                           ObjectMapper objectMapper,
+                           PlatformTransactionManager transactionManager,
+                           ObjectProvider<MeterRegistry> meterRegistryProvider) {
         this.linkMapper = linkMapper;
         this.properties = properties;
         this.bloomReadPolicy = bloomReadPolicy;
@@ -74,6 +91,15 @@ public class RedirectService {
         this.outboxStore = outboxStore;
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        MeterRegistry registry = meterRegistryProvider == null ? null : meterRegistryProvider.getIfAvailable();
+        if (registry != null) {
+            Gauge.builder("marketing.shortlink.visit.queue.size", visitQueue, BlockingQueue::size)
+                    .description("短链异步访问缓冲队列当前积压条数")
+                    .register(registry);
+            FunctionCounter.builder("marketing.shortlink.visit.dropped", droppedVisits, AtomicLong::get)
+                    .description("短链访问缓冲队列溢出丢弃条数")
+                    .register(registry);
+        }
         if (properties.getShortlink().isAsyncVisitRecord()) {
             this.visitFlushExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "shortlink-visit-flush");
