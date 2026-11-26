@@ -166,11 +166,14 @@ public class OfferInventoryService {
         if (targetQuantity < 1 || maxClaimsPerUser < 1 || idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new BizException(ErrorCode.VALIDATION, "投放数量、限领和幂等键不合法");
         }
-        OfferInventory allocation = requireOwned(inventoryId);
+        OfferInventory allocation = allocationMapper.lockById(inventoryId);
+        if (allocation == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "投放不存在");
+        }
+        OfferPlan template = templateService.requireOwned(allocation.getPlanId());
         if (allocation.getStatus() != InventoryStatus.OPEN) {
             throw new BizException(ErrorCode.CONFLICT, "投放已冻结");
         }
-        OfferPlan template = templateService.requireOwned(allocation.getPlanId());
         if (maxClaimsPerUser > OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy())) {
             throw new BizException(ErrorCode.VALIDATION, "本场限领不能高于模板总限领");
         }
@@ -194,13 +197,13 @@ public class OfferInventoryService {
         } catch (DataIntegrityViolationException exception) {
             throw new BizException(ErrorCode.CONFLICT, "投放请求冲突，请用原幂等键重试");
         }
-        allocation = allocationMapper.selectById(inventoryId);
         if (maxClaimsPerUser != allocation.getMaxClaimsPerUser()) {
             if (!allowLimitChange) {
                 throw new BizException(ErrorCode.CONFLICT, "开场后不能修改每人限领");
             }
-            allocation.setMaxClaimsPerUser(maxClaimsPerUser);
-            allocationMapper.updateById(allocation);
+            allocationMapper.update(null, Wrappers.<OfferInventory>lambdaUpdate()
+                    .eq(OfferInventory::getId, inventoryId)
+                    .set(OfferInventory::getMaxClaimsPerUser, maxClaimsPerUser));
         }
         int delta = targetQuantity - allocation.getQuantity();
         final long planId = allocation.getPlanId();
