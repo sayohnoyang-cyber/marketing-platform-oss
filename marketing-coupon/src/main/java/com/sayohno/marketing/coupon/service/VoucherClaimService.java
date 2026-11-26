@@ -350,18 +350,18 @@ public class VoucherClaimService {
     private StockDecision reserveAllocationStock(OfferPlan template, OfferInventory allocation, ClaimTicket current, long userId) {
         long inventoryId = allocation.getId();
         int templateLimit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
-        // 仅当 Redis 库存键尚未初始化时才回源查询数据库剩余并扣除在途 RESERVED 票据；
-        // 缓存已热时 Lua 不会读取兜底库存参数，跳过 COUNT(*) 可显著降低秒杀热路径的数据库压力。
-        int remaining = 0;
-        if (!stockGateway.hasAllocationStock(template.getId(), inventoryId)) {
-            Long inFlight = requestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
-                    .eq(ClaimTicket::getInventoryId, inventoryId)
-                    .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
-            remaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount()
-                    - (inFlight == null ? 0 : inFlight.intValue()));
+        long ttl = reservationTtl(template);
+        StockDecision decision = stockGateway.tryAcquireAllocation(inventoryId, template.getId(), userId,
+                allocation.getMaxClaimsPerUser(), templateLimit, -1, ttl, current.getId());
+        if (!StockDecision.NEEDS_STOCK.equals(decision.reason())) {
+            return decision;
         }
+        Long inFlight = requestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getInventoryId, inventoryId)
+                .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
+        int remaining = Math.max(0, allocation.getQuantity() - allocation.getClaimedCount() - inFlight.intValue());
         return stockGateway.tryAcquireAllocation(inventoryId, template.getId(), userId,
-                allocation.getMaxClaimsPerUser(), templateLimit, remaining, reservationTtl(template), current.getId());
+                allocation.getMaxClaimsPerUser(), templateLimit, remaining, ttl, current.getId());
     }
 
     private static String validateRequestId(String requestId) {

@@ -92,6 +92,9 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
         if (held != null) {
             return new StockDecision(StockDecision.RESERVED, held.templateCount(), held.allocCount());
         }
+        if (dbRemaining < 0 && !allocations.containsKey(inventoryId)) {
+            return new StockDecision(StockDecision.NEEDS_STOCK, 0, 0);
+        }
         State state = allocations.computeIfAbsent(inventoryId, ignored -> new State(dbRemaining));
         int templateCurrent = templateCount(templateId, userId);
         int allocCurrent = state.counts.getOrDefault(userId, 0);

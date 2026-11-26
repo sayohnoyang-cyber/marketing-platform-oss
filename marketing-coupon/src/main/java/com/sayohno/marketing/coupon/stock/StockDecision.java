@@ -1,6 +1,7 @@
 package com.sayohno.marketing.coupon.stock;
 
 public record StockDecision(String reason, int claimSeq, int allocCount) {
+    public static final String NEEDS_STOCK = "needs_stock";
     public static final String RESERVED = "reserved";
     public static final String SOLD_OUT = "sold_out";
     public static final String QUOTA_EXCEEDED = "quota_exceeded";

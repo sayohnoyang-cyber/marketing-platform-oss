@@ -13,6 +13,10 @@ if existingTicket then
 end
 local remaining = redis.call('GET', KEYS[1])
 if not remaining then
+    -- 未提供数据库余量时通知调用方回源，避免将尚未初始化的库存写成零。
+    if tonumber(ARGV[4]) < 0 then
+        return {'needs_stock', 0, 0}
+    end
     if tonumber(ARGV[3]) > 0 then
         redis.call('SET', KEYS[1], ARGV[4], 'EX', ARGV[3])
     else
