@@ -119,15 +119,7 @@ public class CampaignClaimService {
      * 异步消费 coupon.claim 事件或查单时，幂等补齐领取意向回填与活动转化归因。
      */
     public void completeClaimAttribution(long voucherId) {
-        var req = claimService.findRequestByUserCouponId(voucherId);
-        if (req == null || req.getInventoryId() == null || req.getInventoryId() <= 0) {
-            return;
-        }
-        CampaignClaimIntent intent = intentMapper.selectOne(Wrappers.<CampaignClaimIntent>lambdaQuery()
-                .eq(CampaignClaimIntent::getUserId, req.getUserId())
-                .eq(CampaignClaimIntent::getPlanId, req.getPlanId())
-                .eq(CampaignClaimIntent::getInventoryId, req.getInventoryId())
-                .eq(CampaignClaimIntent::getRequestId, req.getRequestId()));
+        CampaignClaimIntent intent = findClaimIntent(voucherId);
         if (intent == null) {
             return;
         }
@@ -141,11 +133,27 @@ public class CampaignClaimService {
         });
     }
 
+    private CampaignClaimIntent findClaimIntent(long voucherId) {
+        var req = claimService.findRequestByUserCouponId(voucherId);
+        if (req == null || req.getInventoryId() == null || req.getInventoryId() <= 0) {
+            return null;
+        }
+        return intentMapper.selectOne(Wrappers.<CampaignClaimIntent>lambdaQuery()
+                .eq(CampaignClaimIntent::getUserId, req.getUserId())
+                .eq(CampaignClaimIntent::getPlanId, req.getPlanId())
+                .eq(CampaignClaimIntent::getInventoryId, req.getInventoryId())
+                .eq(CampaignClaimIntent::getRequestId, req.getRequestId()));
+    }
+
     public void recordFromCouponEvent(String eventType, long voucherId, Long settlementId) {
         CampaignClaimIntent intent = intentMapper.selectOne(Wrappers.<CampaignClaimIntent>lambdaQuery()
                 .eq(CampaignClaimIntent::getVoucherId, voucherId));
         if (intent == null) {
-            return;
+            // 核销、退款事件可能先于领取归因到达，此时按原领取请求定位活动。
+            intent = findClaimIntent(voucherId);
+            if (intent == null) {
+                return;
+            }
         }
         String type = "coupon.redeem".equals(eventType) ? "REDEEM" : "REFUND";
         recordConversion(type.toLowerCase() + ":" + (settlementId == null ? voucherId : settlementId),
