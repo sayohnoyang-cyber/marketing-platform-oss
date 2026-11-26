@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +54,8 @@ public class RedirectService {
     /** 有界内存缓冲队列：302 跳转热路径仅入队，后台单线程定期批量落库 Outbox，避免高并发跳转阻塞 MySQL。 */
     private final BlockingQueue<PendingVisit> visitQueue = new ArrayBlockingQueue<>(VISIT_QUEUE_CAPACITY);
     private final AtomicLong droppedVisits = new AtomicLong();
+    /** 按完整短链加进程内 Singleflight 互斥锁，合并并发缓存未命中回源请求，防止热点短链缓存击穿。 */
+    private final ConcurrentHashMap<String, Object> lookupLocks = new ConcurrentHashMap<>();
     private final ScheduledExecutorService visitFlushExecutor;
 
     public RedirectService(LinkMapper linkMapper,
@@ -103,9 +106,24 @@ public class RedirectService {
             if (record) recordVisit(cached, visitorId, channelCode);
             return cached;
         }
-        Link link = load(full, domain, shortUri);
-        ensureUsable(full, link, false);
-        rememberHit(full, link);
+        Link link;
+        Object lock = lookupLocks.computeIfAbsent(full, ignored -> new Object());
+        try {
+            synchronized (lock) {
+                // 双重检查：排队等待回源的线程直接命中先行线程写入的缓存。
+                Link doubleChecked = readCache(full);
+                if (doubleChecked != null) {
+                    ensureUsable(full, doubleChecked, true);
+                    if (record) recordVisit(doubleChecked, visitorId, channelCode);
+                    return doubleChecked;
+                }
+                link = load(full, domain, shortUri);
+                ensureUsable(full, link, false);
+                rememberHit(full, link);
+            }
+        } finally {
+            lookupLocks.remove(full, lock);
+        }
         if (record) recordVisit(link, visitorId, channelCode);
         return link;
     }
@@ -197,14 +215,13 @@ public class RedirectService {
         }
     }
 
-    private void rememberHit(String full, Link observed) {
+    private void rememberHit(String full, Link current) {
         StringRedisTemplate template = redis.getIfAvailable();
-        if (template == null || observed.getId() == null) {
+        if (template == null || current.getId() == null) {
             return;
         }
-        Link current = linkMapper.selectById(observed.getId());
-        if (current == null || current.getUpdateTime() == null || !current.getUpdateTime().equals(observed.getUpdateTime())
-                || current.getEnableStatus() == null || current.getEnableStatus() != 0
+        // 直接复用刚从数据库回源加载的 Link 实体，省去冗余的二次 selectById 查询。
+        if (current.getEnableStatus() == null || current.getEnableStatus() != 0
                 || current.getDelTime() == null || current.getDelTime() != 0) {
             return;
         }
@@ -221,12 +238,14 @@ public class RedirectService {
         ObjectNode node = objectMapper.createObjectNode();
         node.put("id", current.getId());
         node.put("origin", current.getOriginUrl());
-        node.put("enable", current.getEnableStatus() == null ? 0 : current.getEnableStatus());
+        node.put("enable", current.getEnableStatus());
         node.put("delTime", current.getDelTime());
         if (current.getValidDate() != null) {
             node.put("validDate", current.getValidDate().toString());
         }
-        node.put("updateTime", current.getUpdateTime().toString());
+        if (current.getUpdateTime() != null) {
+            node.put("updateTime", current.getUpdateTime().toString());
+        }
         template.opsForValue().set(ShortLinkRedisKeys.gotoCache(full), node.toString(), ttl);
         template.delete(ShortLinkRedisKeys.gotoMiss(full));
     }
@@ -282,7 +301,7 @@ public class RedirectService {
         }
     }
 
-    /** 批量将缓冲队列中的访问事件写入本地 Outbox 表，供后台定时刷盘及测试显式触发。 */
+    /** 批量将缓冲队列中的访问事件通过单条多值 INSERT 写入本地 Outbox 表；刷盘异常时尝试放回队列防丢。 */
     public int flushPendingVisits() {
         int totalFlushed = 0;
         while (totalFlushed < VISIT_FLUSH_LIMIT && !visitQueue.isEmpty()) {
@@ -292,14 +311,22 @@ public class RedirectService {
                 break;
             }
             try {
-                transactionTemplate.executeWithoutResult(status -> {
-                    for (PendingVisit item : batch) {
-                        outboxStore.append(item.eventId(), VISIT_EVENT, item.aggregateId(), item.payload());
-                    }
-                });
+                List<OutboxStore.OutboxBatchItem> items = batch.stream()
+                        .map(item -> new OutboxStore.OutboxBatchItem(item.eventId(), VISIT_EVENT, item.aggregateId(), item.payload()))
+                        .toList();
+                transactionTemplate.executeWithoutResult(status -> outboxStore.appendBatch(items));
                 totalFlushed += batch.size();
             } catch (RuntimeException exception) {
-                log.error("批量刷写短链访问统计失败，本批条数={}", batch.size(), exception);
+                // 写库瞬时抖动时将已抽出的批次重入队列，仅在队列已满时才计入丢弃，避免整批 200 条静默丢失。
+                for (PendingVisit item : batch) {
+                    if (!visitQueue.offer(item)) {
+                        long dropped = droppedVisits.incrementAndGet();
+                        if (dropped == 1 || dropped % 1000 == 0) {
+                            log.warn("短链访问统计重试入队溢出，累计丢弃条数={}", dropped);
+                        }
+                    }
+                }
+                log.error("批量刷写短链访问统计失败，已尝试重入缓冲队列。本批条数={}", batch.size(), exception);
                 break;
             }
         }

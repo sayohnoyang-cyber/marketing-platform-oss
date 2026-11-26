@@ -84,32 +84,32 @@ public class VisitStatsHandler implements OutboxHandler {
             visitor.setLinkId(linkId);
             visitor.setStatDate(day);
             visitor.setVisitorId(visitorId);
-            visitorMapper.insert(visitor);
+            try {
+                visitorMapper.insert(visitor);
+            } catch (DataIntegrityViolationException ignored) {
+                // 并发消费者同时首次写入同一访客时，按非首次访客处理（UV 不重复累加）。
+                firstVisitor = false;
+            }
         }
         probe.ifAvailable(StatsApplyProbe::beforeDailyAggregate);
         int uvDelta = firstVisitor ? 1 : 0;
-        LinkStatsDaily daily = dailyMapper.selectOne(Wrappers.<LinkStatsDaily>lambdaQuery()
-                .eq(LinkStatsDaily::getLinkId, linkId)
-                .eq(LinkStatsDaily::getStatDate, day));
-        if (daily == null) {
-            LinkStatsDaily created = new LinkStatsDaily();
-            created.setLinkId(linkId);
-            created.setStatDate(day);
-            created.setPv(1L);
-            created.setUv((long) uvDelta);
-            created.setUip(0L);
-            try {
-                dailyMapper.insert(created);
-                return;
-            } catch (DataIntegrityViolationException exception) {
-                daily = dailyMapper.selectOne(Wrappers.<LinkStatsDaily>lambdaQuery()
-                        .eq(LinkStatsDaily::getLinkId, linkId)
-                        .eq(LinkStatsDaily::getStatDate, day));
+        LocalDateTime now = LocalDateTime.now();
+        // 热路径直接尝试原子 UPDATE，仅当日统计行尚未创建（影响行数为 0）时再执行 INSERT，减少行锁持有时间。
+        if (dailyMapper.addByLinkAndDate(linkId, day, uvDelta, now) == 1) {
+            return;
+        }
+        LinkStatsDaily created = new LinkStatsDaily();
+        created.setLinkId(linkId);
+        created.setStatDate(day);
+        created.setPv(1L);
+        created.setUv((long) uvDelta);
+        created.setUip(0L);
+        try {
+            dailyMapper.insert(created);
+        } catch (DataIntegrityViolationException exception) {
+            if (dailyMapper.addByLinkAndDate(linkId, day, uvDelta, LocalDateTime.now()) != 1) {
+                throw new IllegalStateException("日统计行不存在");
             }
         }
-        if (daily == null) {
-            throw new IllegalStateException("日统计行不存在");
-        }
-        dailyMapper.add(daily.getId(), uvDelta, LocalDateTime.now());
     }
 }

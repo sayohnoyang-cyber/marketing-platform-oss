@@ -2,6 +2,7 @@ package com.sayohno.marketing.common.outbox;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Delete;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -12,6 +13,22 @@ import java.util.List;
 
 @Mapper
 public interface OutboxEventMapper extends BaseMapper<OutboxEvent> {
+
+    /**
+     * 单条多值批量写入 Outbox 事件，显著降低高并发统计/异步刷盘场景下的数据库往返次数。
+     */
+    @Insert("""
+            <script>
+            INSERT INTO infra_outbox_event
+            (id, event_id, event_type, aggregate_id, payload, status, retry_count, next_retry_at, create_time, update_time)
+            VALUES
+            <foreach collection="events" item="item" separator=",">
+            (#{item.id}, #{item.eventId}, #{item.eventType}, #{item.aggregateId}, #{item.payload},
+             #{item.status}, #{item.retryCount}, #{item.nextRetryAt}, #{item.createTime}, #{item.updateTime})
+            </foreach>
+            </script>
+            """)
+    int insertBatch(@Param("events") List<OutboxEvent> events);
 
     @Select("""
             SELECT * FROM infra_outbox_event
