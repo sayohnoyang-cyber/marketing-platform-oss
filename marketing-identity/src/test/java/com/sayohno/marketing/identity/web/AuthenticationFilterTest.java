@@ -176,4 +176,52 @@ class AuthenticationFilterTest {
         filter.doFilter(new MockHttpServletRequest("GET", "/s/abc"), blockedRes, (req, res) -> {});
         assertEquals(401, blockedRes.getStatus());
     }
+
+    @Test
+    void sanitizesUnsafeRequestIdAndRejectsStaleSessionVersion() throws Exception {
+        AtomicReference<String> deletedToken = new AtomicReference<>();
+        SessionStore store = new SessionStore() {
+            @Override
+            public void save(String token, UserSession session, Duration ttl) {
+            }
+
+            @Override
+            public Optional<UserSession> find(String token) {
+                UserSession session = new UserSession();
+                session.setUserId(99L);
+                session.setSessionVersion(1L);
+                return Optional.of(session);
+            }
+
+            @Override
+            public void delete(String token) {
+                deletedToken.set(token);
+            }
+
+            @Override
+            public long currentVersion(long userId) {
+                return 2L;
+            }
+        };
+        IdentityContextLoader loader = mock(IdentityContextLoader.class);
+        AuthenticationFilter filter = new AuthenticationFilter(store, loader, new ObjectMapper(), new MarketingProperties());
+
+        // 含 CRLF/XSS/超长字符的非法 X-Request-Id 应被丢弃并重新生成安全 ID
+        MockHttpServletRequest badHeaderReq = new MockHttpServletRequest("GET", "/api/health");
+        badHeaderReq.addHeader("X-Request-Id", "bad\r\n<script>alert(1)</script>");
+        MockHttpServletResponse cleanRes = new MockHttpServletResponse();
+        filter.doFilter(badHeaderReq, cleanRes, (req, res) -> {});
+        String returnedId = cleanRes.getHeader("X-Request-Id");
+        org.junit.jupiter.api.Assertions.assertNotNull(returnedId);
+        org.junit.jupiter.api.Assertions.assertTrue(returnedId.matches("^[A-Za-z0-9._-]{1,64}$"));
+        org.junit.jupiter.api.Assertions.assertNotEquals("bad\r\n<script>alert(1)</script>", returnedId);
+
+        // 会话版本号落后于用户当前版本号时，应立即清理令牌并返回 401
+        MockHttpServletRequest staleReq = new MockHttpServletRequest("GET", "/api/user/profile");
+        staleReq.addHeader("Authorization", "Bearer old-token");
+        MockHttpServletResponse staleRes = new MockHttpServletResponse();
+        filter.doFilter(staleReq, staleRes, (req, res) -> {});
+        assertEquals(401, staleRes.getStatus());
+        assertEquals("old-token", deletedToken.get());
+    }
 }

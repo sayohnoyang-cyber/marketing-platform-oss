@@ -29,10 +29,16 @@ import com.sayohno.marketing.identity.web.dto.ProfileView;
 import com.sayohno.marketing.identity.web.dto.RegisterRequest;
 import com.sayohno.marketing.identity.web.dto.RegisterType;
 import com.sayohno.marketing.identity.web.dto.ShopView;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.SecureRandom;
 import java.util.List;
@@ -50,8 +56,11 @@ public class AuthService {
     private final IdentityContextLoader contextLoader;
     private final MerchantAccessService merchantAccessService;
     private final MarketingProperties properties;
+    private final TransactionTemplate transactionTemplate;
+    private final LoginAttemptLimiter loginAttemptLimiter;
     private final SecureRandom random = new SecureRandom();
 
+    @Autowired
     public AuthService(IamUserMapper userMapper,
                        IamMerchantMapper merchantMapper,
                        IamMerchantMemberMapper memberMapper,
@@ -60,7 +69,9 @@ public class AuthService {
                        SessionStore sessionStore,
                        IdentityContextLoader contextLoader,
                        MerchantAccessService merchantAccessService,
-                       MarketingProperties properties) {
+                       MarketingProperties properties,
+                       PlatformTransactionManager transactionManager,
+                       ObjectProvider<LoginAttemptLimiter> loginAttemptLimiterProvider) {
         this.userMapper = userMapper;
         this.merchantMapper = merchantMapper;
         this.memberMapper = memberMapper;
@@ -70,55 +81,74 @@ public class AuthService {
         this.contextLoader = contextLoader;
         this.merchantAccessService = merchantAccessService;
         this.properties = properties;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.loginAttemptLimiter = loginAttemptLimiterProvider == null ? null : loginAttemptLimiterProvider.getIfAvailable();
     }
 
-    @Transactional
+    /**
+     * 先在独立事务内完成账号与工作空间落库，事务提交后再签发 Redis 会话，避免回滚产生孤立登录态。
+     */
     public LoginResponse register(RegisterRequest request) {
         if (request.getRegisterType() == RegisterType.MERCHANT
                 && (request.getMerchantName() == null || request.getMerchantName().isBlank())) {
             throw new BizException(ErrorCode.VALIDATION, "merchantName 不能为空");
         }
-        IamUser user = new IamUser();
-        user.setUsername(request.getUsername());
-        user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
-        user.setStatus(IamStatus.ENABLED);
-        try {
-            userMapper.insert(user);
-        } catch (DataIntegrityViolationException exception) {
-            throw new BizException(ErrorCode.CONFLICT, "用户名已存在");
+        RegisteredAccount created = transactionTemplate.execute(status -> {
+            IamUser user = new IamUser();
+            user.setUsername(request.getUsername());
+            user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
+            user.setStatus(IamStatus.ENABLED);
+            try {
+                userMapper.insert(user);
+            } catch (DataIntegrityViolationException exception) {
+                throw new BizException(ErrorCode.CONFLICT, "用户名已存在");
+            }
+            Long merchantId = null;
+            String storeCode = null;
+            if (request.getRegisterType() == RegisterType.WORKSPACE) {
+                IamMerchant workspace = new IamMerchant();
+                workspace.setName(request.getUsername());
+                workspace.setOwnerUserId(user.getId());
+                workspace.setStatus(IamStatus.ENABLED);
+                merchantMapper.insert(workspace);
+                merchantId = workspace.getId();
+            } else if (request.getRegisterType() == RegisterType.MERCHANT) {
+                IamMerchant merchant = new IamMerchant();
+                merchant.setName(request.getMerchantName().trim());
+                merchant.setStatus(IamStatus.ENABLED);
+                merchantMapper.insert(merchant);
+                insertMember(merchant.getId(), user.getId(), UserRole.OWNER);
+                String shopName = request.getShopName() == null || request.getShopName().isBlank()
+                        ? request.getMerchantName().trim()
+                        : request.getShopName().trim();
+                storeCode = insertShop(merchant.getId(), shopName).getStoreCode();
+                merchantId = merchant.getId();
+            }
+            return new RegisteredAccount(user, merchantId, storeCode);
+        });
+        if (created == null) {
+            throw new BizException(ErrorCode.SYSTEM, "注册账号失败");
         }
-        Long merchantId = null;
-        String storeCode = null;
-        if (request.getRegisterType() == RegisterType.WORKSPACE) {
-            IamMerchant workspace = new IamMerchant();
-            workspace.setName(request.getUsername());
-            workspace.setOwnerUserId(user.getId());
-            workspace.setStatus(IamStatus.ENABLED);
-            merchantMapper.insert(workspace);
-            merchantId = workspace.getId();
-        } else if (request.getRegisterType() == RegisterType.MERCHANT) {
-            IamMerchant merchant = new IamMerchant();
-            merchant.setName(request.getMerchantName().trim());
-            merchant.setStatus(IamStatus.ENABLED);
-            merchantMapper.insert(merchant);
-            insertMember(merchant.getId(), user.getId(), UserRole.OWNER);
-            String shopName = request.getShopName() == null || request.getShopName().isBlank()
-                    ? request.getMerchantName().trim()
-                    : request.getShopName().trim();
-            storeCode = insertShop(merchant.getId(), shopName).getStoreCode();
-            merchantId = merchant.getId();
-        }
-        return issueLogin(user, merchantId, storeCode);
+        return issueLogin(created.user(), created.merchantId(), created.storeCode());
     }
 
     public LoginResponse login(LoginRequest request) {
+        if (loginAttemptLimiter != null) {
+            loginAttemptLimiter.assertAllowed(request.getUsername());
+        }
         IamUser user = userMapper.selectOne(Wrappers.<IamUser>lambdaQuery()
                 .eq(IamUser::getUsername, request.getUsername()));
         if (user == null || !passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
+            if (loginAttemptLimiter != null) {
+                loginAttemptLimiter.recordFailure(request.getUsername());
+            }
             throw new BizException(ErrorCode.BAD_CREDENTIAL);
         }
         if (user.getStatus() == null || user.getStatus() != IamStatus.ENABLED) {
             throw new BizException(ErrorCode.DISABLED);
+        }
+        if (loginAttemptLimiter != null) {
+            loginAttemptLimiter.clear(request.getUsername());
         }
         List<IamMerchantMember> memberships = activeMemberships(user.getId());
         IamMerchant owned = merchantMapper.selectOne(Wrappers.<IamMerchant>lambdaQuery()
@@ -151,7 +181,21 @@ public class AuthService {
         userMapper.update(null, Wrappers.<IamUser>lambdaUpdate()
                 .eq(IamUser::getId, user.getId())
                 .set(IamUser::getPasswordHash, passwordEncoder.encode(request.getNewPassword())));
-        contextLoader.evictUser(user.getId());
+        Runnable revokeAll = () -> {
+            // 事务提交后再递增用户会话版本并驱逐本地/Redis 上下文缓存，立即吊销全端旧令牌。
+            sessionStore.bumpVersion(user.getId());
+            contextLoader.evictUser(user.getId());
+        };
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    revokeAll.run();
+                }
+            });
+        } else {
+            revokeAll.run();
+        }
     }
 
     public ProfileView profile() {
@@ -252,12 +296,16 @@ public class AuthService {
         return issueLogin(newToken(), user, merchantId, storeCode);
     }
 
+    private record RegisteredAccount(IamUser user, Long merchantId, String storeCode) {
+    }
+
     private LoginResponse issueLogin(String token, IamUser user, Long merchantId, String storeCode) {
         UserSession session = new UserSession();
         session.setUserId(user.getId());
         session.setMerchantId(merchantId);
         session.setStoreCode(storeCode);
         session.setLoginAtEpochSeconds(java.time.Instant.now().getEpochSecond());
+        session.setSessionVersion(sessionStore.currentVersion(user.getId()));
         sessionStore.save(token, session, properties.getSession().getTtl());
         CurrentUser current = contextLoader.load(session);
         return LoginResponse.builder()

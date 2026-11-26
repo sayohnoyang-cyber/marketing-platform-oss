@@ -30,10 +30,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
 public class AuthenticationFilter extends OncePerRequestFilter {
+    private static final Pattern SAFE_REQUEST_ID = Pattern.compile("^[A-Za-z0-9._-]{1,64}$");
     private final SessionStore sessionStore;
     private final IdentityContextLoader contextLoader;
     private final ObjectMapper objectMapper;
@@ -75,24 +77,18 @@ public class AuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        String requestId = request.getHeader(RequestIds.HEADER);
-        if (requestId == null || requestId.isBlank()) {
-            requestId = UUID.randomUUID().toString().replace("-", "");
-        }
+        String requestId = resolveRequestId(request);
         MDC.put(RequestIds.MDC_KEY, requestId);
         response.setHeader(RequestIds.HEADER, requestId);
         try {
             if (isPublic(request)) {
                 String optionalToken = supportsOptionalAuth(request) ? readToken(request) : null;
                 if (optionalToken != null) {
-                    UserSession session = sessionStore.find(optionalToken).orElse(null);
-                    Duration renewTtl = session == null ? null : effectiveTtl(session);
-                    if (session != null && renewTtl == null) {
-                        sessionStore.delete(optionalToken);
-                    } else if (session != null) {
-                        CurrentUser current = contextLoader.load(session);
+                    ValidatedSession validated = loadValidSession(optionalToken);
+                    if (validated != null) {
+                        CurrentUser current = contextLoader.load(validated.session());
                         if (current != null) {
-                            sessionStore.touch(optionalToken, renewTtl);
+                            sessionStore.touch(optionalToken, validated.renewTtl());
                             UserContext.set(current);
                         }
                     }
@@ -105,14 +101,12 @@ public class AuthenticationFilter extends OncePerRequestFilter {
                 write(response, HttpServletResponse.SC_UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
                 return;
             }
-            UserSession session = sessionStore.find(token).orElse(null);
-            Duration renewTtl = session == null ? null : effectiveTtl(session);
-            if (session != null && renewTtl == null) {
-                sessionStore.delete(token);
+            ValidatedSession validated = loadValidSession(token);
+            if (validated == null) {
                 write(response, HttpServletResponse.SC_UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
                 return;
             }
-            CurrentUser current = session == null ? null : contextLoader.load(session);
+            CurrentUser current = contextLoader.load(validated.session());
             if (current == null) {
                 sessionStore.delete(token);
                 write(response, HttpServletResponse.SC_UNAUTHORIZED, ErrorCode.UNAUTHORIZED);
@@ -122,7 +116,7 @@ public class AuthenticationFilter extends OncePerRequestFilter {
                 write(response, HttpServletResponse.SC_FORBIDDEN, ErrorCode.FORBIDDEN);
                 return;
             }
-            sessionStore.touch(token, renewTtl);
+            sessionStore.touch(token, validated.renewTtl());
             request.setAttribute(AuthAttributes.TOKEN, token);
             UserContext.set(current);
             try {
@@ -202,6 +196,40 @@ public class AuthenticationFilter extends OncePerRequestFilter {
             return null;
         }
         return remaining.compareTo(ttl) < 0 ? remaining : ttl;
+    }
+
+    /**
+     * 对客户端透传的 X-Request-Id 做白名单校验，防止日志伪造、响应头注入或超长 payload 穿透。
+     */
+    private static String resolveRequestId(HttpServletRequest request) {
+        String requestId = request.getHeader(RequestIds.HEADER);
+        if (requestId != null && SAFE_REQUEST_ID.matcher(requestId).matches()) {
+            return requestId;
+        }
+        return UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /**
+     * 校验会话是否存在、版本号是否与用户最新会话版本一致且未超过最长有效期，失效时主动清理令牌。
+     */
+    private ValidatedSession loadValidSession(String token) {
+        UserSession session = sessionStore.find(token).orElse(null);
+        if (session == null) {
+            return null;
+        }
+        if (session.getSessionVersion() != sessionStore.currentVersion(session.getUserId())) {
+            sessionStore.delete(token);
+            return null;
+        }
+        Duration renewTtl = effectiveTtl(session);
+        if (renewTtl == null) {
+            sessionStore.delete(token);
+            return null;
+        }
+        return new ValidatedSession(session, renewTtl);
+    }
+
+    private record ValidatedSession(UserSession session, Duration renewTtl) {
     }
 
     private void write(HttpServletResponse response, int status, ErrorCode errorCode) throws IOException {

@@ -50,4 +50,23 @@ public class RedisSessionStore implements SessionStore {
     public void delete(String token) {
         redis.delete(IdentityRedisKeys.session(token));
     }
+
+    @Override
+    public long currentVersion(long userId) {
+        String raw = redis.opsForValue().get(IdentityRedisKeys.userSessionVersion(userId));
+        if (raw == null || raw.isBlank()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
+    }
+
+    @Override
+    public long bumpVersion(long userId) {
+        Long version = redis.opsForValue().increment(IdentityRedisKeys.userSessionVersion(userId));
+        return version == null ? 0L : version;
+    }
 }

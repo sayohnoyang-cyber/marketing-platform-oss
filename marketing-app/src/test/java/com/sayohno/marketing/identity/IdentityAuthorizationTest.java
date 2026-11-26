@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import com.sayohno.marketing.common.context.UserContext;
@@ -143,6 +144,12 @@ class IdentityAuthorizationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("0"));
 
+        // 改密提交后，此前持有的旧令牌应因会话版本递增而立即被吊销
+        mockMvc.perform(get("/api/user/profile")
+                        .header("Authorization", "Bearer " + account.token()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("A000001"));
+
         mockMvc.perform(post("/api/identity/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"" + username + "\",\"password\":\"password123\"}"))
@@ -153,6 +160,33 @@ class IdentityAuthorizationTest {
                         .content("{\"username\":\"" + username + "\",\"password\":\"newPassword123\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.token").isNotEmpty());
+    }
+
+    @Test
+    void corsHeadersAreAttachedOnUnauthorizedResponseAndLoginLocksOutAfterTenFailures() throws Exception {
+        mockMvc.perform(get("/api/merchant/shops")
+                        .header("Origin", "http://localhost:5173"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:5173"))
+                .andExpect(header().string("Access-Control-Expose-Headers", org.hamcrest.Matchers.containsString("X-Request-Id")));
+
+        String username = "lock_" + UUID.randomUUID().toString().substring(0, 8);
+        register(username, "USER", null);
+
+        for (int i = 0; i < 10; i++) {
+            mockMvc.perform(post("/api/identity/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"username\":\"" + username + "\",\"password\":\"wrong_" + i + "\"}"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.code").value("A000006"));
+        }
+
+        // 连续 10 次失败后，第 11 次即便传入正确密码也应被限流拦截（429 RATE_LIMITED）
+        mockMvc.perform(post("/api/identity/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"password123\"}"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.code").value("A000008"));
     }
 
     private Login register(String username, String type, String merchantName) throws Exception {
