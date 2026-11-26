@@ -256,6 +256,14 @@ class ActivityFlowTest {
         assertEquals("RESERVED", flowService.claimStatus(77L, activity.getId(), template.getId(), "async-req-1").get("status"));
 
         // 第二步：由 Outbox 消费完成落库与归因回填（不依赖进程内队列）
+        ClaimTicket ticket = claimTicketMapper.selectOne(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getRequestId, "async-req-1").eq(ClaimTicket::getUserId, 77L));
+        claimService.completeAsyncClaim(ticket.getId(), ticket.getReservationToken());
+        long voucherId = claimTicketMapper.selectById(ticket.getId()).getVoucherId();
+        var redemption = redemptionService.redeemDirect(77L, voucherId, "先核销后归因", new BigDecimal("50.00"), null);
+        flowService.recordFromCouponEvent(VoucherRedemptionService.REDEEM_EVENT, voucherId, redemption.getId());
+        assertEquals(1L, flowService.report(activity.getId()).stream()
+                .filter(row -> channel.getId().equals(row.get("channelId"))).findFirst().orElseThrow().get("redeems"));
         outboxPublisher.publishDue(20);
         outboxPublisher.publishDue(20);
         Map<String, Object> done = flowService.claimStatus(77L, activity.getId(), template.getId(), "async-req-1");

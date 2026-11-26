@@ -154,6 +154,37 @@ class RedirectServiceBatchAndSingleflightTest {
         }
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void shutdownDrainsMoreThanOneFlushCycle() {
+        MarketingProperties properties = new MarketingProperties();
+        // 手动启用入队，避免后台定时器在断言前提前刷盘。
+        properties.getShortlink().setAsyncVisitRecord(false);
+        LinkMapper links = mock(LinkMapper.class);
+        Link link = new Link();
+        link.setId(503L);
+        link.setShortUri("drain");
+        link.setOriginUrl("https://example.com/drain");
+        link.setDelTime(0L);
+        link.setEnableStatus(0);
+        when(links.selectOne(any())).thenReturn(link);
+        AtomicInteger written = new AtomicInteger();
+        OutboxStore store = mock(OutboxStore.class);
+        when(store.appendBatch(anyList())).thenAnswer(call -> {
+            int count = call.<java.util.List<?>>getArgument(0).size();
+            written.addAndGet(count);
+            return count;
+        });
+        RedirectService service = new RedirectService(links, properties, new BloomReadPolicy(),
+                mock(ObjectProvider.class), mock(ObjectProvider.class), store, new ObjectMapper(), noopTxManager());
+        properties.getShortlink().setAsyncVisitRecord(true);
+        for (int i = 0; i < 2201; i++) {
+            service.resolve("drain", "visitor-" + i, true);
+        }
+        service.shutdownVisitQueue();
+        assertEquals(2201, written.get());
+    }
+
     private static PlatformTransactionManager noopTxManager() {
         return new PlatformTransactionManager() {
             @Override

@@ -29,6 +29,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.doThrow;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -73,7 +77,7 @@ class VoucherAsyncClaimConsistencyTest {
     private OutboxPublisher outboxPublisher;
     @Autowired
     private InboxGuard inboxGuard;
-    @Autowired
+    @SpyBean(name = "memoryCouponStockGateway")
     private OfferStockGateway stockGateway;
     @Autowired
     private TransactionTemplate transactionTemplate;
@@ -163,6 +167,38 @@ class VoucherAsyncClaimConsistencyTest {
         assertEquals(1L, inboxMapper.selectCount(Wrappers.<ConsumerInbox>lambdaQuery()
                 .eq(ConsumerInbox::getConsumerGroup, "coupon-event")
                 .eq(ConsumerInbox::getEventId, transientEvent.getEventId())));
+    }
+
+    @Test
+    void cleanupFailureAfterCommitKeepsVoucherAndStock() {
+        OfferPlan plan = insertPlan(5, 2);
+        OfferInventory inventory = insertInventory(plan.getId(), 3, 2);
+        doThrow(new IllegalStateException("模拟清理超时")).when(stockGateway)
+                .releaseAllocationHold(eq(plan.getId()), eq(inventory.getId()), anyLong());
+
+        var voucher = claimService.claimAllocation(7101L, plan.getId(), inventory.getId(), IssuerScope.MERCHANT, "cleanup");
+        assertEquals(voucher.getId(), claimService.claimAllocation(7101L, plan.getId(), inventory.getId(),
+                IssuerScope.MERCHANT, "cleanup").getId());
+        assertEquals(1, inventoryMapper.selectById(inventory.getId()).getClaimedCount());
+        assertEquals(2, stockGateway.readAllocationRemaining(plan.getId(), inventory.getId()));
+    }
+
+    @Test
+    void replacedLeaseRejectsStaleCommitAndPreservesReservation() {
+        OfferPlan plan = insertPlan(5, 1);
+        OfferInventory inventory = insertInventory(plan.getId(), 3, 1);
+        claimService.claimAllocationAsync(7102L, plan.getId(), inventory.getId(), IssuerScope.MERCHANT, "lease");
+        ClaimTicket row = ticketMapper.selectOne(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getInventoryId, inventory.getId()));
+        LocalDateTime future = LocalDateTime.now().plusDays(2);
+        assertEquals(1, ticketMapper.acquireLease(row.getId(), "接管者", future.plusMinutes(1), future));
+        assertEquals(0, ticketMapper.succeed(row.getId(), row.getReservationToken(), 1L, 1, future));
+        claimService.completeAsyncClaim(row.getId(), row.getReservationToken());
+        assertEquals(ClaimTicketStatus.RESERVED, ticketMapper.selectById(row.getId()).getStatus());
+        assertNotNull(stockGateway.readAllocationHold(plan.getId(), inventory.getId(), row.getId()));
+        claimService.completeAsyncClaim(row.getId(), "接管者");
+        assertEquals(1, inventoryMapper.selectById(inventory.getId()).getClaimedCount());
+        assertNull(ticketMapper.selectById(row.getId()).getReservationToken());
     }
 
     private OfferPlan insertPlan(int stock, int maxClaimsPerUser) {
