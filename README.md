@@ -49,7 +49,6 @@ cp .env.example .env
 
 ```bash
 docker compose up -d
-
 ```
 
 ### 3. 启动后端
@@ -92,10 +91,12 @@ npm run dev
 
 生产机的 Compose 文件是 `compose.yaml`（本仓库的 `docker-compose.yml` 只给本地依赖用）。`deploy.sh` 和 `enable-https.sh` 会在 `compose.yaml`、`compose.yml`、`docker-compose.yaml`、`docker-compose.yml` 里选实际文件。`docker-compose.yml` 如果只是指向 `compose.yaml` 的符号链接，脚本使用 `compose.yaml`，避免 Compose 把两份配置一起读进去。
 
+发布脚本生成 `compose.deploy.yml`，由脚本迁移生产数据库。手动重建应用时也需加载此文件。
+
 服务器 `.env` 的对外地址只有一项：`PUBLIC_ORIGIN=https://sayohno.cn`。`compose.yaml` 把它填进 `CONSOLE_BASE_URL`、`SHORTLINK_PUBLIC_BASE_URL` 和 `MARKETING_WEB_CORSALLOWEDORIGINS_0`。改完后重建应用：
 
 ```bash
-docker compose -f compose.yaml -f docker-compose.https.yml up -d --no-deps app
+docker compose -f compose.yaml -f compose.deploy.yml -f docker-compose.https.yml up -d --no-deps app
 ```
 
 证书镜像是 `certbot/certbot:v2.11.0`。本机已经有这个镜像时，签发和续期用 `docker run --pull never`，不再访问 Docker Hub。本机没有、而且 Docker Hub 超时，脚本会改拉 `docker.m.daocloud.io/certbot/certbot:v2.11.0` 并打成同样的标签。也可以手动：

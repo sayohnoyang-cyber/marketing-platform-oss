@@ -271,4 +271,8 @@ echo "然后编辑 $BASE/.env（不要提交这个文件）。线上只改这一
 echo "  PUBLIC_ORIGIN=https://sayohno.cn"
 echo "compose 会把它映射成 CONSOLE_BASE_URL、SHORTLINK_PUBLIC_BASE_URL 和 MARKETING_WEB_CORSALLOWEDORIGINS_0。"
 echo "再执行："
-echo "  docker compose -f $COMPOSE_FILE -f $BASE/docker-compose.https.yml up -d --no-deps app"
+deploy_args=""
+if [ -f "$BASE/compose.deploy.yml" ]; then
+  deploy_args=" -f $BASE/compose.deploy.yml"
+fi
+echo "  docker compose -f $COMPOSE_FILE$deploy_args -f $BASE/docker-compose.https.yml up -d --no-deps app"
