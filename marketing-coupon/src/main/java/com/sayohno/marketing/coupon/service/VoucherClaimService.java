@@ -214,6 +214,14 @@ public class VoucherClaimService {
     }
 
     public int recoverStuck(Duration olderThan) {
+        List<ClaimTicket> pendingRefunds = requestMapper.selectList(Wrappers.<ClaimTicket>lambdaQuery()
+                .select(ClaimTicket::getId)
+                .eq(ClaimTicket::getStatus, ClaimTicketStatus.FAILED)
+                .eq(ClaimTicket::getRedisApplied, 1)
+                .orderByAsc(ClaimTicket::getId).last("LIMIT 200"));
+        for (ClaimTicket row : pendingRefunds) {
+            clearFailedReservation(row.getId());
+        }
         LocalDateTime deadline = LocalDateTime.now().minus(olderThan);
         // 限制单轮扫描恢复条数，避免积压过长时一次性拉取全部超时票据撑爆内存或长期占用调度线程。
         List<ClaimTicket> stuck = requestMapper.selectList(Wrappers.<ClaimTicket>lambdaQuery()
@@ -381,13 +389,19 @@ public class VoucherClaimService {
     private void failOwned(long id, String token) {
         // 先持久化失败，再退还预扣。进程中断后，同一请求重试会先清理残留标记。
         if (requestMapper.markFailed(id, token, LocalDateTime.now()) == 1) {
-            transactionTemplate.executeWithoutResult(status -> {
-                ClaimTicket row = requestMapper.lockById(id);
-                if (row.getStatus() == ClaimTicketStatus.FAILED) {
-                    releaseFailedReservation(row);
-                }
-            });
+            clearFailedReservation(id);
         }
+    }
+
+    private void clearFailedReservation(long id) {
+        transactionTemplate.executeWithoutResult(status -> {
+            ClaimTicket row = requestMapper.lockById(id);
+            if (row != null && row.getStatus() == ClaimTicketStatus.FAILED && Integer.valueOf(1).equals(row.getRedisApplied())) {
+                releaseFailedReservation(row);
+                requestMapper.update(null, Wrappers.<ClaimTicket>lambdaUpdate()
+                        .eq(ClaimTicket::getId, id).set(ClaimTicket::getRedisApplied, 0));
+            }
+        });
     }
 
     private void releaseFailedReservation(ClaimTicket row) {
