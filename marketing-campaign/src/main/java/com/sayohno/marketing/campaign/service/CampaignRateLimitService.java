@@ -1,6 +1,9 @@
 package com.sayohno.marketing.campaign.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Expiry;
 import com.sayohno.marketing.campaign.dao.entity.CampaignOperation;
 import com.sayohno.marketing.campaign.dao.mapper.CampaignOperationMapper;
 import com.sayohno.marketing.campaign.web.dto.ApplyLimitRequest;
@@ -8,18 +11,27 @@ import com.sayohno.marketing.common.config.MarketingProperties;
 import com.sayohno.marketing.common.exception.BizException;
 import com.sayohno.marketing.common.result.ErrorCode;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 活动领券限流策略与执行服务：
+ * 使用 Caffeine 有界缓存本地限流判定并结合 Redis Pub/Sub 跨节点实时失效，避免多实例策略脑裂。
+ */
 @Service
 public class CampaignRateLimitService {
+    public static final String INVALIDATION_CHANNEL = "campaign:ratelimit:evict";
+
     private final CampaignOperationMapper mapper;
     private final CampaignOperationStore store;
     private final CampaignConfigurationService configuration;
@@ -28,25 +40,64 @@ public class CampaignRateLimitService {
     private final MarketingProperties properties;
     private final CampaignService campaigns;
     private final Clock clock;
+    private final TransactionTemplate transactionTemplate;
     private final DefaultRedisScript<Long> script;
     private final DefaultRedisScript<Long> userScript;
-    private final Map<Long, Decision> decisions = new ConcurrentHashMap<>();
+    private final Cache<Long, Decision> decisions;
 
     public CampaignRateLimitService(CampaignOperationMapper mapper, CampaignOperationStore store, CampaignConfigurationService configuration,
             CapacityBaselineService capacity, ObjectProvider<StringRedisTemplate> redis, MarketingProperties properties, CampaignService campaigns, Clock clock) {
-        this.mapper = mapper; this.store = store; this.configuration = configuration; this.capacity = capacity;
-        this.redis = redis; this.properties = properties; this.campaigns = campaigns; this.clock = clock;
-        this.script = new DefaultRedisScript<>(); script.setLocation(new ClassPathResource("lua/activity_rate_limit.lua")); script.setResultType(Long.class);
-        this.userScript = new DefaultRedisScript<>(); userScript.setLocation(new ClassPathResource("lua/activity_user_rate_limit.lua")); userScript.setResultType(Long.class);
+        this(mapper, store, configuration, capacity, redis, properties, campaigns, clock, null);
     }
 
-    @Transactional
+    @Autowired
+    public CampaignRateLimitService(CampaignOperationMapper mapper, CampaignOperationStore store, CampaignConfigurationService configuration,
+            CapacityBaselineService capacity, ObjectProvider<StringRedisTemplate> redis, MarketingProperties properties, CampaignService campaigns, Clock clock,
+            PlatformTransactionManager transactionManager) {
+        this.mapper = mapper; this.store = store; this.configuration = configuration; this.capacity = capacity;
+        this.redis = redis; this.properties = properties; this.campaigns = campaigns; this.clock = clock;
+        this.transactionTemplate = transactionManager == null ? null : new TransactionTemplate(transactionManager);
+        this.script = new DefaultRedisScript<>(); script.setLocation(new ClassPathResource("lua/activity_rate_limit.lua")); script.setResultType(Long.class);
+        this.userScript = new DefaultRedisScript<>(); userScript.setLocation(new ClassPathResource("lua/activity_user_rate_limit.lua")); userScript.setResultType(Long.class);
+        this.decisions = Caffeine.newBuilder()
+                .maximumSize(10_000)
+                .expireAfter(new Expiry<Long, Decision>() {
+                    @Override
+                    public long expireAfterCreate(Long key, Decision value, long currentTime) {
+                        return Math.max(0L, properties.getCapacity().getPolicyCacheTtl().toNanos());
+                    }
+
+                    @Override
+                    public long expireAfterUpdate(Long key, Decision value, long currentTime, long currentDuration) {
+                        return Math.max(0L, properties.getCapacity().getPolicyCacheTtl().toNanos());
+                    }
+
+                    @Override
+                    public long expireAfterRead(Long key, Decision value, long currentTime, long currentDuration) {
+                        return currentDuration;
+                    }
+                })
+                .build();
+    }
+
+    /**
+     * 应用活动限流策略：先在数据库事务外完成 Redis 连通性检查，再进入短事务落库并广播策略失效通知。
+     */
     public Map<String, Object> apply(long activityId, ApplyLimitRequest request) {
         campaigns.requireOwned(activityId);
         var template = redis.getIfAvailable();
         if (template == null) throw new BizException(ErrorCode.CONFLICT, "Redis未启用，不能应用分布式限流");
         try (var connection = template.getConnectionFactory().getConnection()) { connection.ping(); }
         catch (RuntimeException exception) { throw new BizException(ErrorCode.CONFLICT, "Redis不可用，限流策略未应用"); }
+
+        Map<String, Object> result = transactionTemplate != null
+                ? transactionTemplate.execute(status -> applyInTransaction(activityId, request))
+                : applyInTransaction(activityId, request);
+        evictAndBroadcast(activityId);
+        return result;
+    }
+
+    private Map<String, Object> applyInTransaction(long activityId, ApplyLimitRequest request) {
         mapper.lockActivity(activityId);
         String config = configuration.fingerprint(activityId);
         String hash = store.hash(request.forecastId(), config);
@@ -86,12 +137,40 @@ public class CampaignRateLimitService {
     }
 
     @Transactional
-    public void disable(long activityId) { campaigns.requireOwned(activityId); deactivate(activityId); }
+    public void disable(long activityId) {
+        campaigns.requireOwned(activityId);
+        deactivate(activityId);
+        evictAndBroadcast(activityId);
+    }
+
+    /**
+     * 处理来自 Redis Pub/Sub 的策略失效通知，清理本机 Caffeine 缓存。
+     */
+    public void handleInvalidation(String message) {
+        if (message == null || message.isBlank()) {
+            return;
+        }
+        try {
+            decisions.invalidate(Long.parseLong(message.trim()));
+        } catch (NumberFormatException ignored) {
+        }
+    }
 
     private void deactivate(long activityId) {
         mapper.update(null, Wrappers.<CampaignOperation>lambdaUpdate().eq(CampaignOperation::getActivityId, activityId)
                 .eq(CampaignOperation::getKind, "LIMIT").eq(CampaignOperation::getStatus, "ACTIVE").set(CampaignOperation::getStatus, "INACTIVE"));
-        decisions.remove(activityId);
+        decisions.invalidate(activityId);
+    }
+
+    private void evictAndBroadcast(long activityId) {
+        decisions.invalidate(activityId);
+        var template = redis.getIfAvailable();
+        if (template != null) {
+            try {
+                template.convertAndSend(INVALIDATION_CHANNEL, String.valueOf(activityId));
+            } catch (RuntimeException ignored) {
+            }
+        }
     }
 
     private CampaignOperation active(long activityId) {
@@ -165,18 +244,22 @@ public class CampaignRateLimitService {
     }
 
     private Decision decision(long activityId) {
-        long now = System.currentTimeMillis();
-        Decision cached = decisions.get(activityId);
-        if (cached != null && cached.loadedAt() + properties.getCapacity().getPolicyCacheTtl().toMillis() > now) {
-            return cached;
+        long ttlNanos = properties.getCapacity().getPolicyCacheTtl().toNanos();
+        if (ttlNanos > 0) {
+            Decision cached = decisions.getIfPresent(activityId);
+            if (cached != null) {
+                return cached;
+            }
         }
-        Decision loaded = load(activityId, now);
-        decisions.put(activityId, loaded);
+        Decision loaded = load(activityId);
+        if (ttlNanos > 0) {
+            decisions.put(activityId, loaded);
+        }
         return loaded;
     }
 
-    private Decision load(long activityId, long now) {
-        Decision fallback = new Decision(now, 0L, properties.getCapacity().getDefaultClaimQps(), Map.of(), true);
+    private Decision load(long activityId) {
+        Decision fallback = new Decision(0L, properties.getCapacity().getDefaultClaimQps(), Map.of(), true);
         var row = active(activityId);
         if (row == null) return fallback;
         Map<String, Object> policy = store.decode(row);
@@ -188,10 +271,10 @@ public class CampaignRateLimitService {
         @SuppressWarnings("unchecked") Map<String, Object> rawSources = (Map<String, Object>) policy.get("sources");
         Map<String, Integer> sources = new HashMap<>();
         rawSources.forEach((key, value) -> sources.put(key, Integer.parseInt(String.valueOf(value))));
-        return new Decision(now, row.getId(), Integer.parseInt(String.valueOf(policy.get("totalQps"))), sources, false);
+        return new Decision(row.getId(), Integer.parseInt(String.valueOf(policy.get("totalQps"))), sources, false);
     }
 
     /** 本机缓存的限流判定；fallback 表示使用默认保护额度。 */
-    private record Decision(long loadedAt, long policyId, int totalQps, Map<String, Integer> sources, boolean fallback) {
+    private record Decision(long policyId, int totalQps, Map<String, Integer> sources, boolean fallback) {
     }
 }

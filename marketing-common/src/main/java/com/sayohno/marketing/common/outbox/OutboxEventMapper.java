@@ -71,6 +71,14 @@ public interface OutboxEventMapper extends BaseMapper<OutboxEvent> {
             """)
     int markDead(@Param("eventId") String eventId, @Param("error") String error, @Param("now") LocalDateTime now);
 
+    @Select("""
+            SELECT id FROM infra_outbox_event
+            WHERE status = 2 AND update_time < #{cutoff}
+            ORDER BY id
+            LIMIT #{limit}
+            """)
+    List<Long> findExpiredSentIds(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
+
     @Delete("""
             DELETE FROM infra_outbox_event
             WHERE status = 2 AND update_time < #{cutoff}

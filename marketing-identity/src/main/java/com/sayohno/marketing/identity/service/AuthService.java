@@ -151,6 +151,7 @@ public class AuthService {
         userMapper.update(null, Wrappers.<IamUser>lambdaUpdate()
                 .eq(IamUser::getId, user.getId())
                 .set(IamUser::getPasswordHash, passwordEncoder.encode(request.getNewPassword())));
+        contextLoader.evictUser(user.getId());
     }
 
     public ProfileView profile() {
@@ -238,6 +239,7 @@ public class AuthService {
         } catch (DataIntegrityViolationException exception) {
             throw new BizException(ErrorCode.CONFLICT, "用户已是该商家成员");
         }
+        contextLoader.evictUser(user.getId());
         return MemberView.builder()
                 .userId(String.valueOf(user.getId()))
                 .username(user.getUsername())

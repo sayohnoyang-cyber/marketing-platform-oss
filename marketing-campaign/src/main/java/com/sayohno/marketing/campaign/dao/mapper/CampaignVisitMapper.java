@@ -63,6 +63,16 @@ public interface CampaignVisitMapper extends BaseMapper<CampaignVisit> {
             """)
     long unreservedActiveVisitors(@Param("activityId") long activityId, @Param("activeChannelIds") List<Long> activeChannelIds);
 
+    @Select("""
+            SELECT id FROM campaign_visit
+            WHERE visited_at < #{cutoff}
+              AND NOT EXISTS (SELECT 1 FROM campaign_claim_intent i WHERE i.visit_id = campaign_visit.id)
+              AND NOT EXISTS (SELECT 1 FROM campaign_conversion c WHERE c.visit_id = campaign_visit.id)
+            ORDER BY id
+            LIMIT #{limit}
+            """)
+    List<Long> findExpiredUnreferencedIds(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
+
     @Delete("""
             DELETE FROM campaign_visit
             WHERE visited_at < #{cutoff}
