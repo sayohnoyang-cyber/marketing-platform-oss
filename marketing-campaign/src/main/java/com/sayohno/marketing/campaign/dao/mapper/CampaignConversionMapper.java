@@ -7,6 +7,26 @@ import org.apache.ibatis.annotations.Mapper;
 @Mapper
 public interface CampaignConversionMapper extends BaseMapper<CampaignConversion> {
     @org.apache.ibatis.annotations.Select("""
+            SELECT c.channel_id AS channel_id,
+                   COUNT(*) AS refund_count,
+                   COUNT(s.refund_amount) AS amount_count,
+                   COALESCE(SUM(s.refund_amount), 0) AS known_amount
+            FROM campaign_conversion c
+            LEFT JOIN voucher_redemption s ON s.id = c.settlement_id AND s.voucher_id = c.voucher_id
+            WHERE c.activity_id = #{activityId} AND c.event_type = 'REFUND'
+            GROUP BY c.channel_id
+            """)
+    java.util.List<ChannelRefundSummaryRow> refundsByChannel(@org.apache.ibatis.annotations.Param("activityId") long activityId);
+
+    @org.apache.ibatis.annotations.Select("""
+            SELECT channel_id, event_type, COUNT(*) AS cnt
+            FROM campaign_conversion
+            WHERE activity_id = #{activityId}
+            GROUP BY channel_id, event_type
+            """)
+    java.util.List<ChannelEventCountRow> countByChannelAndType(@org.apache.ibatis.annotations.Param("activityId") long activityId);
+
+    @org.apache.ibatis.annotations.Select("""
         <script>
         SELECT COUNT(*) AS refund_count, COUNT(s.refund_amount) AS amount_count,
           COALESCE(SUM(s.refund_amount), 0) AS known_amount

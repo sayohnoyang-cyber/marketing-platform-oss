@@ -29,6 +29,15 @@ public interface CampaignVisitMapper extends BaseMapper<CampaignVisit> {
     long uniqueActivityVisitors(@Param("activityId") long activityId);
 
     @Select("""
+            SELECT channel_id, COUNT(DISTINCT visitor_id) AS cnt
+            FROM campaign_visit
+            WHERE activity_id = #{activityId} AND valid_flag = 1
+              AND visitor_id IS NOT NULL AND visitor_id != '' AND visitor_id NOT IN ('landing', 'anonymous')
+            GROUP BY channel_id
+            """)
+    List<ChannelCountRow> uniqueVisitorsByChannel(@Param("activityId") long activityId);
+
+    @Select("""
             <script>
             SELECT activity_id, COUNT(DISTINCT visitor_id) AS cnt
             FROM campaign_visit

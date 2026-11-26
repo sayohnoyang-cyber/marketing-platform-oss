@@ -11,6 +11,14 @@ import java.util.List;
 @Mapper
 public interface CampaignReservationMapper extends BaseMapper<CampaignReservation> {
     @Select("""
+            SELECT channel_id, COUNT(*) AS cnt
+            FROM campaign_reservation
+            WHERE activity_id = #{activityId} AND status = #{status}
+            GROUP BY channel_id
+            """)
+    List<ChannelCountRow> countByChannel(@Param("activityId") long activityId, @Param("status") int status);
+
+    @Select("""
             <script>
             SELECT activity_id, COUNT(*) AS cnt
             FROM campaign_reservation
