@@ -377,7 +377,21 @@ public class RedirectService {
                 Thread.currentThread().interrupt();
             }
         }
-        flushSafely();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!visitQueue.isEmpty() && System.nanoTime() < deadline) {
+            if (flushPendingVisits() == 0) {
+                // 数据库暂时不可用时退避重试，避免停机期间忙循环。
+                try {
+                    TimeUnit.MILLISECONDS.sleep(200);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        if (!visitQueue.isEmpty()) {
+            log.warn("短链统计停机刷盘未完成，剩余 {} 条访问记录", visitQueue.size());
+        }
     }
 
     private record PendingVisit(String eventId, String aggregateId, String payload) {
