@@ -59,6 +59,19 @@ public interface OutboxEventMapper extends BaseMapper<OutboxEvent> {
             """)
     int markSent(@Param("id") long id, @Param("now") LocalDateTime now);
 
+    /**
+     * 批量将同一批投递成功的 Outbox 事件标记为 SENT，减少逐条 UPDATE 产生的数据库往返。
+     */
+    @Update("""
+            <script>
+            UPDATE infra_outbox_event
+            SET status = 2, update_time = #{now}, last_error = NULL
+            WHERE status = 1 AND id IN
+            <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    int markSentBatch(@Param("ids") List<Long> ids, @Param("now") LocalDateTime now);
+
     @Update("""
             UPDATE infra_outbox_event
             SET status = CASE WHEN retry_count + 1 >= #{maxRetries} THEN 3 ELSE 0 END,

@@ -35,6 +35,11 @@ public class VoucherEventHandler implements OutboxHandler {
     }
 
     @Override
+    public String consumerGroup() {
+        return "marketing-coupon-consumer";
+    }
+
+    @Override
     public void handle(OutboxEvent event) {
         if (VoucherClaimService.ASYNC_CLAIM_EVENT.equals(event.getEventType())) {
             // 异步领券落库必须脱离外层事务执行：内部依赖“独立事务提交后释放 Redis hold”，且瞬时异常需直接抛出重试。

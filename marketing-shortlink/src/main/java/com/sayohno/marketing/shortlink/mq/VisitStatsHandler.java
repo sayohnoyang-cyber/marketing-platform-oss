@@ -49,6 +49,11 @@ public class VisitStatsHandler implements OutboxHandler {
     }
 
     @Override
+    public String consumerGroup() {
+        return "marketing-stats-consumer";
+    }
+
+    @Override
     public void handle(OutboxEvent event) {
         inboxGuard.once("shortlink-stats", event, this::apply);
     }

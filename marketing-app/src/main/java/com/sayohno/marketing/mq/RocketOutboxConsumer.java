@@ -19,6 +19,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * RocketMQ Outbox 消费者装配器：
+ * 按领域消费组严格隔离路由（券主链路、活动转化归因、活动转化审计、短链访问统计各跑独立消费组），
+ * 避免单个域的消费失败引发全组重试与跨组死信污染。
+ */
 @Component
 @ConditionalOnProperty(prefix = "marketing.mq", name = "enabled", havingValue = "true")
 public class RocketOutboxConsumer implements ApplicationRunner {
@@ -37,11 +42,16 @@ public class RocketOutboxConsumer implements ApplicationRunner {
     @Override
     public void run(org.springframework.boot.ApplicationArguments args) throws Exception {
         start("marketing-coupon-consumer", "coupon.claim || coupon.claim.async || coupon.redeem || coupon.refund", false);
+        start("marketing-campaign-conversion-consumer", "coupon.claim || coupon.redeem || coupon.refund", false);
         start("marketing-stats-consumer", "shortlink.visit", false);
         start("marketing-campaign-consumer", "campaign.conversion", false);
-        start("marketing-coupon-dlq", "%DLQ%marketing-coupon-consumer", true);
-        start("marketing-stats-dlq", "%DLQ%marketing-stats-consumer", true);
-        start("marketing-campaign-dlq", "%DLQ%marketing-campaign-consumer", true);
+        if (properties.getMq().isDlqSubscribeEnabled()) {
+            // RocketMQ 默认将 %DLQ% 主题设为只写（perm=2），仅当运维显式开启读权限时才订阅死信回标。
+            start("marketing-coupon-dlq", "%DLQ%marketing-coupon-consumer", true);
+            start("marketing-campaign-conversion-dlq", "%DLQ%marketing-campaign-conversion-consumer", true);
+            start("marketing-stats-dlq", "%DLQ%marketing-stats-consumer", true);
+            start("marketing-campaign-dlq", "%DLQ%marketing-campaign-consumer", true);
+        }
     }
 
     private void start(String group, String expression, boolean deadLetter) throws Exception {
@@ -58,19 +68,22 @@ public class RocketOutboxConsumer implements ApplicationRunner {
             });
         } else {
             created.subscribe(properties.getMq().getTopic(), expression);
-            created.registerMessageListener((MessageListenerConcurrently) (messages, context) -> consume(messages));
+            created.registerMessageListener((MessageListenerConcurrently) (messages, context) -> consume(group, messages));
         }
         created.start();
         consumers.add(created);
     }
 
-    private ConsumeConcurrentlyStatus consume(List<MessageExt> messages) {
+    ConsumeConcurrentlyStatus consume(String consumerGroup, List<MessageExt> messages) {
         for (MessageExt message : messages) {
             OutboxEvent event = new OutboxEvent();
             event.setEventId(message.getKeys());
             event.setEventType(message.getTags());
             event.setPayload(new String(message.getBody(), StandardCharsets.UTF_8));
-            List<OutboxHandler> matched = handlers.stream().filter(handler -> handler.supports(event.getEventType())).toList();
+            // 仅路由至归属本消费组且支持该事件类型的处理器，严格隔离消费组职责边界。
+            List<OutboxHandler> matched = handlers.stream()
+                    .filter(handler -> consumerGroup.equals(handler.consumerGroup()) && handler.supports(event.getEventType()))
+                    .toList();
             if (matched.isEmpty()) {
                 return ConsumeConcurrentlyStatus.RECONSUME_LATER;
             }
@@ -79,7 +92,7 @@ public class RocketOutboxConsumer implements ApplicationRunner {
                     handler.handle(event);
                 }
             } catch (RuntimeException exception) {
-                log.error("事件消费失败，等待 RocketMQ 重试。eventId={}", event.getEventId(), exception);
+                log.error("事件消费失败，等待 RocketMQ 重试。group={}, eventId={}", consumerGroup, event.getEventId(), exception);
                 return ConsumeConcurrentlyStatus.RECONSUME_LATER;
             }
         }

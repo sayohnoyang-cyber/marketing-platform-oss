@@ -14,6 +14,7 @@ public class CampaignConversionAuditHandler implements OutboxHandler {
     private final ObjectMapper json;
     public CampaignConversionAuditHandler(InboxGuard inbox, ObjectMapper json) { this.inbox = inbox; this.json = json; }
     @Override public boolean supports(String type) { return CampaignFlowService.CONVERSION_EVENT.equals(type); }
+    @Override public String consumerGroup() { return "marketing-campaign-consumer"; }
     @Override public void handle(OutboxEvent event) {
         inbox.once("campaign-report", event, received -> {
             try {

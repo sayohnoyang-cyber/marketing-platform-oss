@@ -42,5 +42,17 @@ services:
       - "${ROCKETMQ_NAMESRV_PORT:-9876}:9876"
     command: sh mqnamesrv
 
+  rocketmq-broker:
+    image: apache/rocketmq:5.1.4
+    depends_on:
+      - rocketmq-namesrv
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+    ports:
+      - "${ROCKETMQ_BROKER_PORT:-10911}:10911"
+      - "10909:10909"
+      - "10912:10912"
+    command: sh -c "echo 'autoCreateTopicEnable=true' > /tmp/broker.conf && echo 'brokerIP1=127.0.0.1' >> /tmp/broker.conf && exec sh mqbroker -n rocketmq-namesrv:9876 -c /tmp/broker.conf"
+
 volumes:
   marketing-mysql:

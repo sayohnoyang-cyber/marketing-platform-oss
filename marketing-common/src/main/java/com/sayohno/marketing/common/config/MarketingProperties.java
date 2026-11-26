@@ -54,6 +54,11 @@ public class MarketingProperties {
         private boolean enabled = false;
         private String nameServer = "127.0.0.1:9876";
         private String topic = "marketing-event";
+        /**
+         * 是否订阅 RocketMQ 死信队列（%DLQ%*）；RocketMQ 默认将自动生成的死信主题权限设为只写（perm=2），
+         * 需在运维侧显式开启读权限后才可启用订阅，因此默认关闭以免启动订阅失败。
+         */
+        private boolean dlqSubscribeEnabled = false;
     }
 
     @Data

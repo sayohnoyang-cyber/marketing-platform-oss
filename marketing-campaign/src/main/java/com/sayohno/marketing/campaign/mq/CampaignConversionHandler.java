@@ -30,6 +30,12 @@ public class CampaignConversionHandler implements OutboxHandler {
     }
 
     @Override
+    public String consumerGroup() {
+        // 独立消费组隔离：防止活动转化归因失败拖垮券主链路消费组（marketing-coupon-consumer）。
+        return "marketing-campaign-conversion-consumer";
+    }
+
+    @Override
     public void handle(OutboxEvent event) {
         inboxGuard.once("campaign-conversion", event, this::apply);
     }

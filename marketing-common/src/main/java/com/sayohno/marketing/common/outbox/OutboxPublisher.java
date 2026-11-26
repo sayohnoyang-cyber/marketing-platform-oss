@@ -5,6 +5,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Component
 public class OutboxPublisher {
@@ -53,15 +55,17 @@ public class OutboxPublisher {
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime stale = now.minus(properties.getOutbox().getSendingLease());
         var due = mapper.findDue(now, stale, limit);
-        int delivered = 0;
+        if (due.isEmpty()) {
+            return new BatchOutcome(0, 0);
+        }
+        List<Long> sentIds = new ArrayList<>(due.size());
         for (OutboxEvent event : due) {
             if (mapper.claim(event.getId(), now, stale) != 1) {
                 continue;
             }
             try {
                 transport.dispatch(event);
-                mapper.markSent(event.getId(), LocalDateTime.now());
-                delivered++;
+                sentIds.add(event.getId());
             } catch (RuntimeException exception) {
                 String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
                 if (message.length() > 500) {
@@ -72,7 +76,18 @@ public class OutboxPublisher {
                         message, properties.getOutbox().getMaxRetries());
             }
         }
-        return new BatchOutcome(due.size(), delivered);
+        if (!sentIds.isEmpty()) {
+            LocalDateTime sentAt = LocalDateTime.now();
+            try {
+                mapper.markSentBatch(sentIds, sentAt);
+            } catch (RuntimeException ignored) {
+                // 批量更新异常时降级逐条确认，确保已投递状态不丢失。
+                for (Long sentId : sentIds) {
+                    mapper.markSent(sentId, sentAt);
+                }
+            }
+        }
+        return new BatchOutcome(due.size(), sentIds.size());
     }
 
     private record BatchOutcome(int fetched, int delivered) {
