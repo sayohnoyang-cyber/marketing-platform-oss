@@ -29,8 +29,8 @@ class RedisSessionStoreTest {
         UserSession session = new UserSession();
         session.setUserId(9L);
         store.save("abc", session, Duration.ofMinutes(30));
-        verify(values).set(eq("identity:session:abc"), anyString(), eq(Duration.ofMinutes(30)));
+        verify(values).set(eq("identity:session:v2:abc"), anyString(), eq(Duration.ofMinutes(30)));
         store.touch("abc", Duration.ofMinutes(15));
-        verify(redis).expire("identity:session:abc", Duration.ofMinutes(15));
+        verify(redis).expire("identity:session:v2:abc", Duration.ofMinutes(15));
     }
 }

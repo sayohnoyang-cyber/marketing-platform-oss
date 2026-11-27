@@ -197,13 +197,9 @@ class AuthenticationFilterTest {
             public void delete(String token) {
                 deletedToken.set(token);
             }
-
-            @Override
-            public long currentVersion(long userId) {
-                return 2L;
-            }
         };
         IdentityContextLoader loader = mock(IdentityContextLoader.class);
+        when(loader.isRevoked(org.mockito.ArgumentMatchers.any())).thenReturn(true);
         AuthenticationFilter filter = new AuthenticationFilter(store, loader, new ObjectMapper(), new MarketingProperties());
 
         // 含 CRLF/XSS/超长字符的非法 X-Request-Id 应被丢弃并重新生成安全 ID

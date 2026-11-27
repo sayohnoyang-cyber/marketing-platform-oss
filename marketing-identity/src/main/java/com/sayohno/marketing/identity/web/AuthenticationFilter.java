@@ -217,7 +217,7 @@ public class AuthenticationFilter extends OncePerRequestFilter {
         if (session == null) {
             return null;
         }
-        if (session.getSessionVersion() != sessionStore.currentVersion(session.getUserId())) {
+        if (contextLoader.isRevoked(session)) {
             sessionStore.delete(token);
             return null;
         }

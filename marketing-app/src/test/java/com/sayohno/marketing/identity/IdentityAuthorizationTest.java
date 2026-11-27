@@ -2,6 +2,13 @@ package com.sayohno.marketing.identity;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sayohno.marketing.common.config.MarketingProperties;
+import com.sayohno.marketing.common.context.CurrentUser;
+import com.sayohno.marketing.common.context.UserContext;
+import com.sayohno.marketing.identity.dao.entity.IamMerchant;
+import com.sayohno.marketing.identity.dao.mapper.IamMerchantMapper;
+import com.sayohno.marketing.identity.service.AuthService;
+import com.sayohno.marketing.identity.web.dto.ChangePasswordRequest;
 import com.sayohno.marketing.identity.dao.entity.IamUser;
 import com.sayohno.marketing.identity.dao.mapper.IamUserMapper;
 import com.sayohno.marketing.identity.session.SessionStore;
@@ -16,9 +23,14 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,7 +39,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-import com.sayohno.marketing.common.context.UserContext;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -42,6 +53,81 @@ class IdentityAuthorizationTest {
     private IamUserMapper userMapper;
     @Autowired
     private SessionStore sessionStore;
+
+    @Autowired private IamMerchantMapper merchantMapper;
+    @Autowired private MarketingProperties properties;
+    @Autowired private AuthService authService;
+    @Autowired private TransactionTemplate transactions;
+
+    @Test
+    void disabledWorkspaceRejectsCachedMemberSwitchAndDefaultLogin() throws Exception {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        String username = "op_" + suffix;
+        Login owner = register("ws_" + suffix, "WORKSPACE", null);
+        register(username, "USER", null);
+        mockMvc.perform(post("/api/merchant/members").header("Token", owner.token())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", username, "role", "OPERATOR"))))
+                .andExpect(status().isOk());
+
+        Duration previous = properties.getSession().getContextCacheTtl();
+        try {
+            properties.getSession().setContextCacheTtl(Duration.ofMinutes(1));
+            Login member = login(username);
+            assertEquals(owner.merchantId(), member.merchantId());
+            mockMvc.perform(get("/api/merchant/shops").header("Token", member.token())).andExpect(status().isOk());
+            merchantMapper.update(null, Wrappers.<IamMerchant>lambdaUpdate()
+                    .eq(IamMerchant::getId, owner.merchantId()).set(IamMerchant::getStatus, IamStatus.DISABLED));
+
+            // 不发送缓存失效通知，验证已登录成员、主动切换和新登录三个入口。
+            mockMvc.perform(get("/api/merchant/shops").header("Token", member.token())).andExpect(status().isForbidden());
+            mockMvc.perform(post("/api/identity/switch-merchant").header("Token", member.token())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(Map.of("merchantId", owner.merchantId()))))
+                    .andExpect(status().isForbidden());
+            assertNull(login(username).merchantId());
+        } finally {
+            properties.getSession().setContextCacheTtl(previous);
+        }
+    }
+
+    @Test
+    void passwordRevocationCommitsWithHashEvenWhenOldSessionDataSurvives() throws Exception {
+        String username = "rev_" + UUID.randomUUID().toString().substring(0, 8);
+        Login account = register(username, "WORKSPACE", null);
+        Login otherDevice = login(username);
+        long userId = Long.parseLong(account.userId());
+        long originalVersion = userMapper.sessionVersion(userId);
+        ChangePasswordRequest change = new ChangePasswordRequest();
+        change.setOldPassword("password123");
+        change.setNewPassword("newPassword123");
+
+        // 在提交前就能看到同一事务内的版本更新，回滚必须同时恢复密码与会话资格。
+        UserContext.set(CurrentUser.builder().userId(userId).build());
+        try {
+            transactions.executeWithoutResult(tx -> {
+                authService.changePassword(change);
+                assertEquals(originalVersion + 1, userMapper.sessionVersion(userId));
+                tx.setRollbackOnly();
+            });
+        } finally {
+            UserContext.clear();
+        }
+        assertEquals(originalVersion, userMapper.sessionVersion(userId));
+        mockMvc.perform(get("/api/user/profile").header("Token", otherDevice.token())).andExpect(status().isOk());
+        mockMvc.perform(post("/api/identity/password").header("Token", account.token())
+                        .contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsString(change)))
+                .andExpect(status().isOk());
+        assertEquals(originalVersion + 1, userMapper.sessionVersion(userId));
+        for (Login old : List.of(account, otherDevice)) {
+            assertEquals(originalVersion, sessionStore.find(old.token()).orElseThrow().getSessionVersion());
+            mockMvc.perform(get("/api/user/profile").header("Token", old.token())).andExpect(status().isUnauthorized());
+        }
+        var fresh = readLogin(mockMvc.perform(post("/api/identity/login").contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("username", username, "password", change.getNewPassword()))))
+                .andExpect(status().isOk()).andReturn());
+        mockMvc.perform(get("/api/user/profile").header("Token", fresh.token())).andExpect(status().isOk());
+    }
 
     @Test
     void healthDoesNotRequireLogin() throws Exception {

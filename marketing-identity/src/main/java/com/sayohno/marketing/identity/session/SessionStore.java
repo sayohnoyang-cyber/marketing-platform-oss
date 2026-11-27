@@ -16,18 +16,4 @@ public interface SessionStore {
     }
 
     void delete(String token);
-
-    /**
-     * 读取用户当前有效会话版本号，默认为 0。
-     */
-    default long currentVersion(long userId) {
-        return 0L;
-    }
-
-    /**
-     * 递增用户会话版本号，使该用户此前签发的所有旧会话立即失效。
-     */
-    default long bumpVersion(long userId) {
-        return 0L;
-    }
 }

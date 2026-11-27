@@ -36,8 +36,6 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.SecureRandom;
@@ -96,6 +94,7 @@ public class AuthService {
         RegisteredAccount created = transactionTemplate.execute(status -> {
             IamUser user = new IamUser();
             user.setUsername(request.getUsername());
+            user.setSessionVersion(0L);
             user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
             user.setStatus(IamStatus.ENABLED);
             try {
@@ -150,7 +149,7 @@ public class AuthService {
         if (loginAttemptLimiter != null) {
             loginAttemptLimiter.clear(request.getUsername());
         }
-        List<IamMerchantMember> memberships = activeMemberships(user.getId());
+        List<IamMerchantMember> memberships = memberMapper.activeMemberships(user.getId());
         IamMerchant owned = merchantMapper.selectOne(Wrappers.<IamMerchant>lambdaQuery()
                 .eq(IamMerchant::getOwnerUserId, user.getId())
                 .eq(IamMerchant::getStatus, IamStatus.ENABLED));
@@ -178,23 +177,14 @@ public class AuthService {
         if (passwordEncoder.matches(request.getNewPassword(), user.getPasswordHash())) {
             throw new BizException(ErrorCode.VALIDATION, "新密码不能与当前密码相同");
         }
-        userMapper.update(null, Wrappers.<IamUser>lambdaUpdate()
+        // 旧版本作为更新条件，避免两个同时通过旧密码校验的请求相互覆盖。
+        int updated = userMapper.update(null, Wrappers.<IamUser>lambdaUpdate()
                 .eq(IamUser::getId, user.getId())
-                .set(IamUser::getPasswordHash, passwordEncoder.encode(request.getNewPassword())));
-        Runnable revokeAll = () -> {
-            // 事务提交后再递增用户会话版本并驱逐本地/Redis 上下文缓存，立即吊销全端旧令牌。
-            sessionStore.bumpVersion(user.getId());
-            contextLoader.evictUser(user.getId());
-        };
-        if (TransactionSynchronizationManager.isActualTransactionActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    revokeAll.run();
-                }
-            });
-        } else {
-            revokeAll.run();
+                .eq(IamUser::getSessionVersion, user.getSessionVersion())
+                .set(IamUser::getPasswordHash, passwordEncoder.encode(request.getNewPassword()))
+                .setIncrBy(IamUser::getSessionVersion, 1));
+        if (updated != 1) {
+            throw new BizException(ErrorCode.CONFLICT, "密码已变更，请重新登录");
         }
     }
 
@@ -216,20 +206,20 @@ public class AuthService {
                 .eq(IamMerchantMember::getMerchantId, merchantId)
                 .eq(IamMerchantMember::getStatus, IamStatus.ENABLED));
         IamMerchant workspace = merchantMapper.selectById(merchantId);
-        boolean owner = workspace != null && Integer.valueOf(IamStatus.ENABLED).equals(workspace.getStatus())
-                && current.getUserId().equals(workspace.getOwnerUserId());
+        if (workspace == null || !Integer.valueOf(IamStatus.ENABLED).equals(workspace.getStatus())) {
+            throw new BizException(ErrorCode.FORBIDDEN, "不能访问这个工作空间");
+        }
+        boolean owner = current.getUserId().equals(workspace.getOwnerUserId());
         if (!owner && (member == null || !UserRole.merchantRole(member.getRole()))) {
             throw new BizException(ErrorCode.FORBIDDEN, "不能访问这个工作空间");
         }
-        IamUser user = userMapper.selectById(current.getUserId());
-        return issueLogin(token, user, merchantId, firstShopNumber(merchantId));
+        return switchContext(token, current, merchantId, firstShopNumber(merchantId));
     }
 
     public LoginResponse switchShop(String token, String storeCode) {
         IamShop shop = merchantAccessService.requireShop(storeCode);
         CurrentUser current = UserContext.require();
-        IamUser user = userMapper.selectById(current.getUserId());
-        return issueLogin(token, user, current.getMerchantId(), shop.getStoreCode());
+        return switchContext(token, current, current.getMerchantId(), shop.getStoreCode());
     }
 
     public List<ShopView> listShops() {
@@ -293,29 +283,41 @@ public class AuthService {
     }
 
     private LoginResponse issueLogin(IamUser user, Long merchantId, String storeCode) {
-        return issueLogin(newToken(), user, merchantId, storeCode);
+        UserSession session = new UserSession();
+        session.setUserId(user.getId());
+        // 使用校验密码时读取的版本，并发改密后不能给旧密码签发新版本令牌。
+        session.setSessionVersion(user.getSessionVersion());
+        session.setLoginAtEpochSeconds(java.time.Instant.now().getEpochSecond());
+        return saveContext(newToken(), session, merchantId, storeCode);
     }
 
     private record RegisteredAccount(IamUser user, Long merchantId, String storeCode) {
     }
 
-    private LoginResponse issueLogin(String token, IamUser user, Long merchantId, String storeCode) {
-        UserSession session = new UserSession();
-        session.setUserId(user.getId());
+    private LoginResponse switchContext(String token, CurrentUser current, Long merchantId, String storeCode) {
+        UserSession session = sessionStore.find(token)
+                .filter(value -> current.getUserId().equals(value.getUserId()) && !contextLoader.isRevoked(value))
+                .orElseThrow(() -> new BizException(ErrorCode.UNAUTHORIZED));
+        // 切换操作只改变工作空间或门店，沿用原认证版本和首次登录时间。
+        return saveContext(token, session, merchantId, storeCode);
+    }
+
+    private LoginResponse saveContext(String token, UserSession session, Long merchantId, String storeCode) {
         session.setMerchantId(merchantId);
         session.setStoreCode(storeCode);
-        session.setLoginAtEpochSeconds(java.time.Instant.now().getEpochSecond());
-        session.setSessionVersion(sessionStore.currentVersion(user.getId()));
-        sessionStore.save(token, session, properties.getSession().getTtl());
         CurrentUser current = contextLoader.load(session);
+        if (current == null) {
+            throw new BizException(ErrorCode.UNAUTHORIZED);
+        }
+        sessionStore.save(token, session, properties.getSession().getTtl());
         return LoginResponse.builder()
                 .token(token)
-                .userId(String.valueOf(user.getId()))
-                .username(user.getUsername())
+                .userId(String.valueOf(current.getUserId()))
+                .username(current.getUsername())
                 .merchantId(current.getMerchantId() == null ? null : String.valueOf(current.getMerchantId()))
                 .storeCode(current.getStoreCode())
                 .roles(List.copyOf(current.getRoles()))
-                .memberships(membershipViews(user.getId()))
+                .memberships(membershipViews(current.getUserId()))
                 .build();
     }
 
@@ -325,7 +327,7 @@ public class AuthService {
                 .eq(IamMerchant::getOwnerUserId, userId).eq(IamMerchant::getStatus, IamStatus.ENABLED));
         if (owned != null) views.add(MembershipView.builder().merchantId(String.valueOf(owned.getId()))
                 .merchantName(owned.getName()).role(UserRole.OWNER).build());
-        views.addAll(activeMemberships(userId).stream().map(member -> {
+        views.addAll(memberMapper.activeMemberships(userId).stream().map(member -> {
             IamMerchant merchant = merchantMapper.selectById(member.getMerchantId());
             return MembershipView.builder()
                     .merchantId(String.valueOf(member.getMerchantId()))
@@ -334,13 +336,6 @@ public class AuthService {
                     .build();
         }).toList());
         return views;
-    }
-
-    private List<IamMerchantMember> activeMemberships(Long userId) {
-        return memberMapper.selectList(Wrappers.<IamMerchantMember>lambdaQuery()
-                .eq(IamMerchantMember::getUserId, userId)
-                .eq(IamMerchantMember::getStatus, IamStatus.ENABLED)
-                .orderByAsc(IamMerchantMember::getId));
     }
 
     private String firstShopNumber(Long merchantId) {

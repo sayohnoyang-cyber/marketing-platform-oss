@@ -464,18 +464,13 @@ public class VoucherClaimService {
             requireOwner(current, token);
             long inventoryId = current.getInventoryId() == null ? 0L : current.getInventoryId();
             int limit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
-            Long owned = userMapper.selectCount(Wrappers.<IssuedVoucher>lambdaQuery()
-                    .eq(IssuedVoucher::getUserId, userId)
-                    .eq(IssuedVoucher::getPlanId, template.getId()));
-            if (owned != null && owned >= limit) {
-                throw new BizException(ErrorCode.VALIDATION, "已达到领取上限");
-            }
             if (inventoryId == 0) {
                 if (templateMapper.decrementStock(template.getId(), 1, LocalDateTime.now()) != 1) {
                     throw new BizException(ErrorCode.VALIDATION, "库存不足或优惠券已结束");
                 }
             } else {
-                OfferInventory allocation = allocationMapper.selectById(inventoryId);
+                // 在投放行锁内建立本事务的首个一致性读，等待前一笔发券提交后再统计单场已领数。
+                OfferInventory allocation = allocationMapper.lockById(inventoryId);
                 Long allocOwned = userMapper.selectCount(Wrappers.<IssuedVoucher>lambdaQuery()
                         .eq(IssuedVoucher::getUserId, userId)
                         .eq(IssuedVoucher::getInventoryId, inventoryId));
@@ -489,6 +484,10 @@ public class VoucherClaimService {
             LocalDateTime now = LocalDateTime.now();
             // 在数据库事务内基于已有最大序号递增分配 claim_seq，避免 Redis 乱序回补限领计数后触发唯一键冲突。
             Integer latestSeq = userMapper.lockLatestClaimSeq(userId, template.getId());
+            // Redis 配额丢失时，以数据库锁定的最新序号裁决方案总限额；超限会回滚本次扣库。
+            if (latestSeq != null && latestSeq >= limit) {
+                throw new BizException(ErrorCode.VALIDATION, "已达到领取上限");
+            }
             int dbClaimSeq = (latestSeq == null ? 0 : latestSeq) + 1;
             IssuedVoucher coupon = new IssuedVoucher();
             coupon.setUserId(userId);

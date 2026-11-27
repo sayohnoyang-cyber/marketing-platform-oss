@@ -282,7 +282,8 @@ public class CampaignFlowService {
 
     @Transactional
     public void deleteDraft(long activityId) {
-        CampaignActivity activity = campaignService.requireOwned(activityId);
+        // 与发布共用活动行锁，确认仍是草稿后才开始冻结库存和删除关联数据。
+        CampaignActivity activity = campaignService.lockOwned(activityId);
         if (activity.getStatus() == null || activity.getStatus() != ActivityStatuses.DRAFT) {
             throw new BizException(ErrorCode.CONFLICT, "只有草稿状态的活动可以删除");
         }

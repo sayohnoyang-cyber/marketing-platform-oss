@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS iam_user (
     id BIGINT NOT NULL,
     username VARCHAR(32) NOT NULL,
     password_hash VARCHAR(100) NOT NULL,
+    session_version BIGINT NOT NULL DEFAULT 0,
     status TINYINT NOT NULL DEFAULT 1,
     create_time DATETIME NOT NULL,
     update_time DATETIME NOT NULL,

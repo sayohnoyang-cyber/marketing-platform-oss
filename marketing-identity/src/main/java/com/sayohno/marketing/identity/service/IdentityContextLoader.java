@@ -8,6 +8,7 @@ import com.sayohno.marketing.common.config.MarketingProperties;
 import com.sayohno.marketing.common.context.CurrentUser;
 import com.sayohno.marketing.common.context.UserRole;
 import com.sayohno.marketing.identity.IamStatus;
+import com.sayohno.marketing.identity.dao.entity.IamMerchant;
 import com.sayohno.marketing.identity.dao.entity.IamMerchantMember;
 import com.sayohno.marketing.identity.dao.entity.IamShop;
 import com.sayohno.marketing.identity.dao.entity.IamUser;
@@ -26,7 +27,7 @@ import java.util.Set;
 
 /**
  * 用户身份与工作空间权限上下文加载器：
- * 使用 Caffeine 有界本地缓存替换无界 Map，并结合 Redis Pub/Sub 广播在改密、成员/角色变更时即时失效各实例缓存。
+ * 角色上下文使用有界本地缓存和 Redis 失效广播。工作空间状态与会话撤销版本直接查库。
  */
 @Service
 public class IdentityContextLoader {
@@ -82,19 +83,30 @@ public class IdentityContextLoader {
                 .build();
     }
 
+    public boolean isRevoked(UserSession session) {
+        Long version = userMapper.sessionVersion(session.getUserId());
+        return version == null || session.getSessionVersion() != version;
+    }
+
     public CurrentUser load(UserSession session) {
         if (session == null || session.getUserId() == null) {
             return null;
         }
+        // 即使角色缓存命中，也要先确认工作空间仍启用；停用后只保留普通用户身份。
+        IamMerchant workspace = session.getMerchantId() == null ? null : merchantMapper.selectById(session.getMerchantId());
+        if (workspace != null && !Integer.valueOf(IamStatus.ENABLED).equals(workspace.getStatus())) {
+            workspace = null;
+        }
+        Long activeMerchantId = workspace == null ? null : workspace.getId();
         long ttlNanos = properties.getSession().getContextCacheTtl().toNanos();
-        String cacheKey = session.getUserId() + ":" + session.getMerchantId() + ":" + session.getStoreCode();
+        String cacheKey = session.getUserId() + ":" + activeMerchantId + ":" + session.getStoreCode();
         if (ttlNanos > 0) {
             CurrentUser cached = cache.getIfPresent(cacheKey);
             if (cached != null) {
                 return cached;
             }
         }
-        CurrentUser loaded = loadFromDatabase(session);
+        CurrentUser loaded = loadFromDatabase(session, workspace);
         if (ttlNanos > 0 && loaded != null) {
             cache.put(cacheKey, loaded);
         }
@@ -158,7 +170,7 @@ public class IdentityContextLoader {
         }
     }
 
-    private CurrentUser loadFromDatabase(UserSession session) {
+    private CurrentUser loadFromDatabase(UserSession session, IamMerchant workspace) {
         IamUser user = userMapper.selectById(session.getUserId());
         if (user == null || user.getStatus() == null || user.getStatus() != IamStatus.ENABLED) {
             return null;
@@ -166,10 +178,8 @@ public class IdentityContextLoader {
         Set<String> roles = new LinkedHashSet<>();
         roles.add(UserRole.USER);
         Long merchantId = null;
-        if (session.getMerchantId() != null) {
-            var workspace = merchantMapper.selectById(session.getMerchantId());
-            if (workspace != null && Integer.valueOf(IamStatus.ENABLED).equals(workspace.getStatus())
-                    && user.getId().equals(workspace.getOwnerUserId())) {
+        if (workspace != null) {
+            if (user.getId().equals(workspace.getOwnerUserId())) {
                 merchantId = workspace.getId();
                 roles.add(UserRole.OWNER);
             }

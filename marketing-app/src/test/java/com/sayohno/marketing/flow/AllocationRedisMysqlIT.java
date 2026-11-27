@@ -1,6 +1,10 @@
 package com.sayohno.marketing.flow;
 
+import com.sayohno.marketing.campaign.ActivityStatuses;
 import com.sayohno.marketing.campaign.service.CampaignFlowService;
+import com.sayohno.marketing.common.result.ErrorCode;
+import com.sayohno.marketing.coupon.dao.mapper.OfferInventoryMapper;
+import com.sayohno.marketing.coupon.redis.OfferInventoryKeys;
 import com.sayohno.marketing.campaign.service.CampaignService;
 import com.sayohno.marketing.common.context.CurrentUser;
 import com.sayohno.marketing.common.context.UserContext;
@@ -26,7 +30,14 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.math.BigDecimal;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -240,6 +251,109 @@ class AllocationRedisMysqlIT {
         claims.claim(104, plan.getId(), IssuerScope.MERCHANT, "last");
         assertEquals(0, templateMapper.selectById(plan.getId()).getInventoryQty());
         assertThrows(BizException.class, () -> claims.claim(105, plan.getId(), IssuerScope.MERCHANT, "sold-out"));
+    }
+
+    @Autowired private JdbcTemplate jdbc;
+    @Autowired private StringRedisTemplate redis;
+    @Autowired private OfferInventoryMapper inventoryMapper;
+
+    @Test
+    void deleteWaitsForConcurrentPublishAndPreservesAllocation() throws Exception {
+        Shop shop = shop();
+        OfferPlan plan = createPlan(shop, 5);
+        LocalDateTime now = LocalDateTime.now();
+        long id = campaignService.create("并发发布删除", now.plusHours(1), now.plusHours(2), now.plusDays(2)).getId();
+        campaignService.attachCoupon(id, plan.getId());
+        long inventory = flowService.place(id, 3, 1, "draft", BigDecimal.TEN).getInventoryId();
+
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<BizException> deletion = new TransactionTemplate(transactions).execute(tx -> {
+                campaignService.publish(id);
+                // 暂不提交发布，让删除真正进入 InnoDB 的锁等待，再释放发布事务。
+                var result = pool.submit(() -> {
+                    asMerchant(shop);
+                    try {
+                        return assertThrows(BizException.class, () -> flowService.deleteDraft(id));
+                    } finally {
+                        UserContext.clear();
+                    }
+                });
+                awaitLockWaiters(1);
+                return result;
+            });
+            assertEquals(ErrorCode.CONFLICT, deletion.get(10, TimeUnit.SECONDS).getErrorCode());
+            assertEquals(ActivityStatuses.PUBLISHED, campaignService.requireOwned(id).getStatus());
+            assertEquals(inventory, campaignService.coupons(id).get(0).getInventoryId());
+            assertEquals(InventoryStatus.OPEN, allocationService.find(inventory).getStatus());
+            assertEquals(2, templateMapper.selectById(plan.getId()).getInventoryQty());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void missingRedisQuotaCannotExceedPlanOrAllocationLimit() throws Exception {
+        Shop shop = shop();
+        asMerchant(shop);
+        // 分开验证方案总限额和较低的单场限额，以免一个判断掩盖另一个判断。
+        verifyLostQuota(shop, 2, 2, true);
+        verifyLostQuota(shop, 3, 2, false);
+    }
+
+    private void verifyLostQuota(Shop shop, int planLimit, int poolLimit, boolean firstClaimIsDirect) throws Exception {
+        long userId = 701L;
+        LocalDateTime now = LocalDateTime.now();
+        long plan = templateService.create(shop.storeCode(), "限领恢复", IssuerScope.MERCHANT, ApplyScope.STOREWIDE,
+                null, BenefitKind.AMOUNT_OFF, 10, now.minusDays(1), now.plusDays(2),
+                "{\"maxClaimsPerUser\":" + planLimit + "}", "{\"capAmount\":1}").getId();
+        long inventory = allocationService.allocate(plan, 6, poolLimit, "pool-" + plan).getId();
+        if (firstClaimIsDirect) {
+            claims.claim(userId, plan, IssuerScope.MERCHANT, "first");
+        } else {
+            claims.claimAllocation(userId, plan, inventory, IssuerScope.MERCHANT, "first");
+        }
+        redis.delete(List.of(OfferInventoryKeys.planQuota(userId, plan),
+                OfferInventoryKeys.inventoryQuota(plan, userId, inventory)));
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Boolean>> results = new TransactionTemplate(transactions).execute(tx -> {
+                inventoryMapper.lockById(inventory);
+                var pending = List.of("second", "third").stream().map(key -> pool.submit(() -> {
+                    try {
+                        claims.claimAllocation(userId, plan, inventory, IssuerScope.MERCHANT, key);
+                        return true;
+                    } catch (BizException denied) {
+                        assertEquals(ErrorCode.VALIDATION, denied.getErrorCode());
+                        assertEquals(firstClaimIsDirect ? "已达到领取上限" : "已达到本场领取上限", denied.getMessage());
+                        return false;
+                    }
+                })).toList();
+                // 两笔请求已独立通过 Redis 预扣，均在等待数据库投放锁。
+                awaitLockWaiters(2);
+                return pending;
+            });
+            int accepted = 0;
+            for (var result : results) {
+                if (result.get(10, TimeUnit.SECONDS)) accepted++;
+            }
+            assertEquals(1, accepted);
+            int issuedFromPool = firstClaimIsDirect ? 1 : 2;
+            assertEquals(issuedFromPool, claims.receivedCount(userId, inventory));
+            assertEquals(issuedFromPool, allocationService.find(inventory).getClaimedCount());
+            assertEquals(6 - issuedFromPool, stockGateway.readAllocationRemaining(plan, inventory));
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private void awaitLockWaiters(int expected) {
+        org.awaitility.Awaitility.await().pollInSameThread().atMost(Duration.ofSeconds(10)).until(() ->
+                jdbc.queryForObject("""
+                        SELECT COUNT(DISTINCT requesting_thread_id) FROM performance_schema.data_lock_waits
+                        WHERE blocking_thread_id = PS_CURRENT_THREAD_ID()
+                        """, Integer.class) >= expected);
     }
 
     private Shop shop() {
