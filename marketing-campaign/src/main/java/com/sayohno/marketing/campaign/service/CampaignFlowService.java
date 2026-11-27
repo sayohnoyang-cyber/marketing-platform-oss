@@ -193,12 +193,9 @@ public class CampaignFlowService {
 
     @Transactional
     public CampaignOffer place(long activityId, int quantity, int maxClaimsPerUser, String idempotencyKey, BigDecimal budget) {
-        CampaignActivity activity = campaignService.requireOwned(activityId);
+        CampaignActivity activity = campaignService.lockOwned(activityId);
         if (phaseEnded(activity)) {
             throw new BizException(ErrorCode.CONFLICT, "活动已结束或已下线");
-        }
-        if (budget != null) {
-            campaignService.saveBudget(activityId, budget);
         }
         CampaignOffer coupon = couponMapper.selectOne(Wrappers.<CampaignOffer>lambdaQuery()
                 .eq(CampaignOffer::getActivityId, activityId));
@@ -207,25 +204,32 @@ public class CampaignFlowService {
         }
         boolean beforeStart = activity.getStatus() == ActivityStatuses.DRAFT
                 || LocalDateTime.now(clock).isBefore(activity.getStartTime());
+        OfferInventory allocation;
         if (coupon.getInventoryId() == null) {
             if (!beforeStart) {
                 throw new BizException(ErrorCode.CONFLICT, "开场后不能新建投放");
             }
-            OfferInventory allocation = allocationService.allocate(coupon.getPlanId(), quantity, maxClaimsPerUser, idempotencyKey);
+            allocation = allocationService.allocate(coupon.getPlanId(), quantity, maxClaimsPerUser, idempotencyKey);
             coupon.setInventoryId(allocation.getId());
             couponMapper.updateById(coupon);
-            pageCache.evict(activityId);
-            return coupon;
+        } else {
+            allocation = allocationService.adjust(coupon.getInventoryId(), quantity, maxClaimsPerUser, idempotencyKey, beforeStart, beforeStart);
         }
-        allocationService.adjust(coupon.getInventoryId(), quantity, maxClaimsPerUser, idempotencyKey, beforeStart, beforeStart);
+        BigDecimal effectiveBudget = budget != null ? budget : activity.getBudgetAmount();
+        if (effectiveBudget != null || activity.getStatus() != ActivityStatuses.DRAFT) {
+            campaignService.assertBudget(coupon.getPlanId(), allocation.getQuantity(), effectiveBudget);
+        }
+        if (budget != null) {
+            campaignService.saveBudget(activityId, budget);
+        }
         pageCache.evict(activityId);
-        return couponMapper.selectById(coupon.getId());
+        return coupon;
     }
 
     @Transactional
     public CampaignOffer saveOffer(long activityId, Long templateId, int quantity, int maxClaimsPerUser,
                                     String idempotencyKey, BigDecimal budget, Integer version) {
-        CampaignActivity activity = campaignService.requireOwned(activityId);
+        CampaignActivity activity = campaignService.lockOwned(activityId);
         if (version != null && !version.equals(activity.getVersion())) {
             throw new BizException(ErrorCode.CONFLICT, "活动已更新，请刷新后再保存");
         }
@@ -235,7 +239,6 @@ public class CampaignFlowService {
         if (templateId == null) {
             throw new BizException(ErrorCode.VALIDATION, "先选择一张券");
         }
-        campaignService.assertBudget(templateId, quantity, budget);
         CampaignOffer coupon = couponMapper.selectOne(Wrappers.<CampaignOffer>lambdaQuery()
                 .eq(CampaignOffer::getActivityId, activityId));
         if (coupon != null && !coupon.getPlanId().equals(templateId)) {

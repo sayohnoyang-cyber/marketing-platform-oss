@@ -11,6 +11,9 @@ import java.util.List;
 
 @Mapper
 public interface CampaignActivityMapper extends BaseMapper<CampaignActivity> {
+    @Select("SELECT * FROM campaign_activity WHERE id = #{id} AND merchant_id = #{merchantId} FOR UPDATE")
+    CampaignActivity lockOwned(@Param("id") long id, @Param("merchantId") long merchantId);
+
     @Select("""
             SELECT DISTINCT a.* FROM campaign_activity a
             JOIN campaign_offer co ON co.activity_id = a.id

@@ -143,6 +143,13 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         return activity;
     }
 
+    CampaignActivity lockOwned(long activityId) {
+        long merchantId = merchantAccessService.requireMerchant().getMerchantId();
+        CampaignActivity activity = activityMapper.lockOwned(activityId, merchantId);
+        if (activity == null) throw new BizException(ErrorCode.NOT_FOUND, "活动不存在");
+        return activity;
+    }
+
     public ActivityPhase phase(CampaignActivity activity) {
         return ActivityPhase.of(activity.getStatus(), activity.getWarmupStartTime(),
                 activity.getStartTime(), activity.getEndTime(), LocalDateTime.now(clock));
@@ -150,7 +157,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
 
     @Transactional
     public CampaignActivity publish(long activityId) {
-        CampaignActivity activity = requireOwned(activityId);
+        CampaignActivity activity = lockOwned(activityId);
         if (activity.getStatus() != ActivityStatuses.DRAFT
                 && activity.getStatus() != ActivityStatuses.PAUSED
                 && activity.getStatus() != ActivityStatuses.OFFLINE) {
@@ -212,7 +219,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
 
     @Transactional
     public CampaignActivity postpone(long activityId, LocalDateTime warmupStart, LocalDateTime start, LocalDateTime end) {
-        CampaignActivity activity = requireOwned(activityId);
+        CampaignActivity activity = lockOwned(activityId);
         return update(activityId, activity.getName(), warmupStart, start, end, null);
     }
 
@@ -225,7 +232,7 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
     @Transactional
     public CampaignActivity update(long activityId, String name, LocalDateTime warmupStart, LocalDateTime start,
                                    LocalDateTime end, Integer version, String activityType, BigDecimal budgetAmount) {
-        CampaignActivity activity = requireOwned(activityId);
+        CampaignActivity activity = lockOwned(activityId);
         validateDetails(name, activityType, budgetAmount);
         if (budgetAmount != null) {
             for (CampaignOffer linked : couponMapper.selectList(Wrappers.<CampaignOffer>lambdaQuery()
@@ -335,7 +342,10 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         }
         activity.setMainLinkId(linkId);
         activity.setMainEnabled(1);
-        activityMapper.updateById(activity);
+        activityMapper.update(null, Wrappers.<CampaignActivity>lambdaUpdate()
+                .eq(CampaignActivity::getId, activityId)
+                .set(CampaignActivity::getMainLinkId, linkId)
+                .set(CampaignActivity::getMainEnabled, 1));
         pageCache.evict(activityId);
         return activity;
     }
@@ -346,7 +356,9 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
             throw new BizException(ErrorCode.VALIDATION, "活动还没有主链");
         }
         activity.setMainEnabled(enabled ? 1 : 0);
-        activityMapper.updateById(activity);
+        activityMapper.update(null, Wrappers.<CampaignActivity>lambdaUpdate()
+                .eq(CampaignActivity::getId, activityId)
+                .set(CampaignActivity::getMainEnabled, activity.getMainEnabled()));
         // 通过受管入口同步更新主短链启停状态，并清理活动页读缓存。
         linkDirectoryService.updateManagedLink(activity.getMainLinkId(), null, activity.getEndTime(), enabled ? 0 : 1);
         pageCache.evict(activityId);
@@ -378,9 +390,10 @@ public class CampaignService implements DirectClaimGuard, com.sayohno.marketing.
         if (budget == null || budget.signum() < 0) {
             throw new BizException(ErrorCode.VALIDATION, "预算不能为负");
         }
-        CampaignActivity activity = requireOwned(activityId);
-        activity.setBudgetAmount(budget);
-        activityMapper.updateById(activity);
+        activityMapper.update(null, Wrappers.<CampaignActivity>lambdaUpdate()
+                .eq(CampaignActivity::getId, activityId)
+                .eq(CampaignActivity::getMerchantId, merchantAccessService.requireMerchant().getMerchantId())
+                .set(CampaignActivity::getBudgetAmount, budget));
     }
 
     public Map<String, Object> present(CampaignActivity activity) {

@@ -188,6 +188,25 @@ class AllocationRedisMysqlIT {
         assertEquals(8, edited.getIssuedTotal());
     }
 
+    @Test
+    void liveAllocationUsesEffectiveBudgetAndRollsBackRejectedChanges() {
+        OfferPlan plan = createPlan(shop(), 5);
+        LocalDateTime now = LocalDateTime.now();
+        var activity = campaignService.create("活动预算", now.plusHours(1), now.plusHours(2), now.plusDays(2));
+        long id = activity.getId();
+        campaignService.attachCoupon(id, plan.getId());
+        var offer = flowService.place(id, 1, 1, "initial", BigDecimal.ONE);
+        campaignService.publish(id);
+        campaignService.postpone(id, now.minusHours(2), now.minusMinutes(1), now.plusDays(1));
+
+        assertThrows(BizException.class, () -> flowService.place(id, 3, 1, "append", null));
+        assertThrows(BizException.class, () -> flowService.place(id, 3, 1, "append", BigDecimal.valueOf(2)));
+        assertEquals(1, allocationService.find(offer.getInventoryId()).getQuantity());
+        assertEquals(0, BigDecimal.ONE.compareTo(campaignService.requireOwned(id).getBudgetAmount()));
+        flowService.place(id, 3, 1, "append", BigDecimal.valueOf(3));
+        assertEquals(3, allocationService.find(offer.getInventoryId()).getQuantity());
+    }
+
     private Shop shop() {
         IamMerchant merchant = new IamMerchant();
         merchant.setName("真实商家" + UUID.randomUUID());
