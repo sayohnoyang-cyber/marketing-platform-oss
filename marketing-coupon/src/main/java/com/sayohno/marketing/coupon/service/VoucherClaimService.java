@@ -302,9 +302,7 @@ public class VoucherClaimService {
                         }
                         decision = reserveAllocationStock(template, allocation, ticket, ticket.getUserId());
                     } else {
-                        int limit = OfferPolicyRules.maxClaimsPerUser(template.getClaimPolicy());
-                        decision = stockGateway.tryAcquire(template.getId(), ticket.getUserId(), limit,
-                                template.getInventoryQty(), reservationTtl(template), id);
+                        decision = reservePlanStock(template, ticket);
                     }
                     if (!decision.ok()) {
                         throw stockError(decision);
@@ -353,6 +351,26 @@ public class VoucherClaimService {
 
     private long reservationTtl(OfferPlan template) {
         return Math.max(60, Duration.between(LocalDateTime.now(), template.getUsableUntil()).getSeconds());
+    }
+
+    private StockDecision reservePlanStock(OfferPlan template, ClaimTicket ticket) {
+        // 方案库存变更也持有此行锁。仅在缓存缺失时用已提交的余量扣除在途票据重建。
+        OfferPlan current = templateMapper.lockOwned(template.getId(), template.getMerchantId());
+        if (current == null || current.getStatus() != OfferPlanStatus.OPEN) {
+            throw new BizException(ErrorCode.VALIDATION, "优惠券已结束");
+        }
+        int limit = OfferPolicyRules.maxClaimsPerUser(current.getClaimPolicy());
+        long ttl = reservationTtl(current);
+        StockDecision decision = stockGateway.tryAcquire(current.getId(), ticket.getUserId(), limit, -1, ttl, ticket.getId());
+        if (!StockDecision.NEEDS_STOCK.equals(decision.reason())) {
+            return decision;
+        }
+        long reserved = requestMapper.selectCount(Wrappers.<ClaimTicket>lambdaQuery()
+                .eq(ClaimTicket::getPlanId, current.getId())
+                .eq(ClaimTicket::getInventoryId, 0L)
+                .eq(ClaimTicket::getStatus, ClaimTicketStatus.RESERVED));
+        int available = (int) Math.max(0L, current.getInventoryQty() - reserved);
+        return stockGateway.tryAcquire(current.getId(), ticket.getUserId(), limit, available, ttl, ticket.getId());
     }
 
     private StockDecision reserveAllocationStock(OfferPlan template, OfferInventory allocation, ClaimTicket current, long userId) {

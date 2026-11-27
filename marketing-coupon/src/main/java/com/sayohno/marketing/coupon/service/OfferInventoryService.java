@@ -150,6 +150,7 @@ public class OfferInventoryService {
         if (templateMapper.decrementStock(templateId, quantity, LocalDateTime.now()) != 1) {
             throw new BizException(ErrorCode.VALIDATION, "可投放数量不足");
         }
+        stockGateway.invalidatePlanStock(templateId);
         OfferInventory created = new OfferInventory();
         created.setActivityId(activityId);
         created.setPlanId(templateId);
@@ -221,6 +222,7 @@ public class OfferInventoryService {
             if (allocationMapper.addQuantity(inventoryId, delta, allocation.getQuantity(), LocalDateTime.now()) != 1) {
                 throw new BizException(ErrorCode.CONFLICT, "投放数量已变化，请重试");
             }
+            stockGateway.invalidatePlanStock(planId);
             afterCommit(() -> stockGateway.increaseAllocationIfPresent(planId, inventoryId, delta));
         } else if (delta < 0) {
             if (!allowReduce) {
@@ -231,6 +233,7 @@ public class OfferInventoryService {
                 throw new BizException(ErrorCode.VALIDATION, "减少后的投放不能少于已领取数量");
             }
             templateMapper.returnUnallocated(planId, reduce, LocalDateTime.now());
+            stockGateway.invalidatePlanStock(planId);
             afterCommit(() -> stockGateway.decreaseAllocationIfPresent(planId, inventoryId, reduce));
         }
         return allocationMapper.selectById(inventoryId);
@@ -253,6 +256,7 @@ public class OfferInventoryService {
         final long planId = allocation.getPlanId();
         if (unclaimed > 0) {
             templateMapper.returnUnallocated(planId, unclaimed, LocalDateTime.now());
+            stockGateway.invalidatePlanStock(planId);
         }
         afterCommit(() -> stockGateway.deleteAllocation(planId, inventoryId));
         return allocationMapper.selectById(inventoryId);

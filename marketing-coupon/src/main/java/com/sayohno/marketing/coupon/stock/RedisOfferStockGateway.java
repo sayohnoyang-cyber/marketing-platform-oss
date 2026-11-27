@@ -82,12 +82,8 @@ public class RedisOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public void increaseIfPresent(long templateId, int delta) {
-        if (delta <= 0) {
-            return;
-        }
-        // 使用 Lua 在 Redis 单线程内原子完成“存在才递增”，避免 hasKey + increment 之间的键过期竞态。
-        redis.execute(stockIncreaseScript, List.of(OfferInventoryKeys.planInventory(templateId)), Integer.toString(delta));
+    public void invalidatePlanStock(long templateId) {
+        redis.delete(OfferInventoryKeys.planInventory(templateId));
     }
 
     @Override

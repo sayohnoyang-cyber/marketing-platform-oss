@@ -12,7 +12,7 @@ public interface OfferStockGateway {
 
     void releaseHold(long templateId, long claimRequestId);
 
-    void increaseIfPresent(long templateId, int delta);
+    void invalidatePlanStock(long templateId);
 
     StockDecision tryAcquireAllocation(long inventoryId, long templateId, long userId, int allocationLimit,
                                        int templateLimit, int dbRemaining, long ttlSeconds, long claimRequestId);

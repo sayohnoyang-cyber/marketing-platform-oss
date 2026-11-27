@@ -224,6 +224,24 @@ class AllocationRedisMysqlIT {
         assertEquals(InventoryStatus.OPEN, allocationService.find(b.getInventoryId()).getStatus());
     }
 
+    @Autowired
+    private com.sayohno.marketing.coupon.service.VoucherClaimService claims;
+
+    @Test
+    void returnedAllocationStockIsAvailableToDirectClaims() {
+        OfferPlan plan = createPlan(shop(), 4);
+        var allocation = allocationService.allocate(plan.getId(), 3, 1, "place");
+        claims.claim(101, plan.getId(), IssuerScope.MERCHANT, "initial");
+        allocationService.adjust(allocation.getId(), 2, 1, "reduce", true, true);
+        claims.claim(102, plan.getId(), IssuerScope.MERCHANT, "after-reduction");
+        allocationService.freeze(allocation.getId());
+        allocationService.freeze(allocation.getId());
+        claims.claim(103, plan.getId(), IssuerScope.MERCHANT, "after-freeze");
+        claims.claim(104, plan.getId(), IssuerScope.MERCHANT, "last");
+        assertEquals(0, templateMapper.selectById(plan.getId()).getInventoryQty());
+        assertThrows(BizException.class, () -> claims.claim(105, plan.getId(), IssuerScope.MERCHANT, "sold-out"));
+    }
+
     private Shop shop() {
         IamMerchant merchant = new IamMerchant();
         merchant.setName("真实商家" + UUID.randomUUID());

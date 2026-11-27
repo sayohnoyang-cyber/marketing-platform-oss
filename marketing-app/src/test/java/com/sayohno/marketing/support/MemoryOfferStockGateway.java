@@ -23,6 +23,9 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
         if (held != null) {
             return new StockDecision(StockDecision.RESERVED, held);
         }
+        if (dbStock < 0 && !states.containsKey(templateId)) {
+            return new StockDecision(StockDecision.NEEDS_STOCK, 0);
+        }
         State state = states.computeIfAbsent(templateId, ignored -> new State(dbStock));
         if (state.stock <= 0) {
             return new StockDecision(StockDecision.SOLD_OUT, 0);
@@ -70,11 +73,8 @@ public class MemoryOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public synchronized void increaseIfPresent(long templateId, int delta) {
-        State state = states.get(templateId);
-        if (state != null) {
-            state.stock += delta;
-        }
+    public synchronized void invalidatePlanStock(long templateId) {
+        states.remove(templateId);
     }
 
     @Override

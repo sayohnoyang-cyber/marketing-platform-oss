@@ -28,8 +28,8 @@ public class FailClosedOfferStockGateway implements OfferStockGateway {
     }
 
     @Override
-    public void increaseIfPresent(long templateId, int delta) {
-        throw new BizException(ErrorCode.SYSTEM, "Redis 未启用，不能调整库存缓存");
+    public void invalidatePlanStock(long templateId) {
+        // 此配置没有库存缓存。
     }
 
     @Override

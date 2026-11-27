@@ -238,7 +238,7 @@ public class OfferPlanService {
         if (templateMapper.increaseStock(templateId, merchant.getMerchantId(), count, LocalDateTime.now()) != 1) {
             throw new BizException(ErrorCode.NOT_FOUND, "优惠券模板不存在");
         }
-        stockGateway.increaseIfPresent(templateId, count);
+        stockGateway.invalidatePlanStock(templateId);
         log(templateId, merchant.getUserId(), "INCREASE_STOCK", "count=" + count);
         return templateMapper.selectById(templateId);
     }

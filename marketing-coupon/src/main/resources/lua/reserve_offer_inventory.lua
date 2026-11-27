@@ -10,6 +10,9 @@ if existingTicket then
 end
 local remaining = redis.call('GET', KEYS[1])
 if not remaining then
+    if tonumber(ARGV[3]) < 0 then
+        return {'needs_stock', 0}
+    end
     if tonumber(ARGV[2]) > 0 then
         redis.call('SET', KEYS[1], ARGV[3], 'EX', ARGV[2])
     else
