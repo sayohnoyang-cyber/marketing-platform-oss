@@ -34,6 +34,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -57,6 +58,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AllocationRedisMysqlIT {
     @Autowired
     private CampaignService campaignService;
+    // 活动时间沿用业务时钟，避免 CI 的默认时区改变活动阶段。
+    @Autowired
+    private Clock campaignClock;
     @Autowired
     private CampaignFlowService flowService;
     @Autowired
@@ -81,7 +85,7 @@ class AllocationRedisMysqlIT {
     void allocationStaysWithinMysqlAndRedis() throws Exception {
         Shop shop = shop();
         asMerchant(shop);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(campaignClock);
         OfferPlan template = templateService.create(shop.storeCode(), "真实投放", IssuerScope.MERCHANT, ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, 10,
                 now.minusDays(1), now.plusDays(3),
                 "{\"maxClaimsPerUser\":2}", "{\"capAmount\":\"1.00\",\"validityPeriodHours\":24}");
@@ -202,7 +206,7 @@ class AllocationRedisMysqlIT {
     @Test
     void liveAllocationUsesEffectiveBudgetAndRollsBackRejectedChanges() {
         OfferPlan plan = createPlan(shop(), 5);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(campaignClock);
         var activity = campaignService.create("活动预算", now.plusHours(1), now.plusHours(2), now.plusDays(2));
         long id = activity.getId();
         campaignService.attachCoupon(id, plan.getId());
@@ -221,7 +225,7 @@ class AllocationRedisMysqlIT {
     @Test
     void equalPlacementKeysInDifferentActivitiesCreateIndependentInventories() {
         OfferPlan plan = createPlan(shop(), 4);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(campaignClock);
         var first = campaignService.create("第一场", now.plusHours(1), now.plusHours(2), now.plusDays(1));
         var second = campaignService.create("第二场", now.plusHours(1), now.plusHours(2), now.plusDays(1));
         campaignService.attachCoupon(first.getId(), plan.getId());
@@ -261,7 +265,7 @@ class AllocationRedisMysqlIT {
     void deleteWaitsForConcurrentPublishAndPreservesAllocation() throws Exception {
         Shop shop = shop();
         OfferPlan plan = createPlan(shop, 5);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(campaignClock);
         long id = campaignService.create("并发发布删除", now.plusHours(1), now.plusHours(2), now.plusDays(2)).getId();
         campaignService.attachCoupon(id, plan.getId());
         long inventory = flowService.place(id, 3, 1, "draft", BigDecimal.TEN).getInventoryId();
