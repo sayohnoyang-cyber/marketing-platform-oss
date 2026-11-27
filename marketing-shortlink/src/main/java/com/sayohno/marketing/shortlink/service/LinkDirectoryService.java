@@ -23,6 +23,9 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -367,7 +370,18 @@ public class LinkDirectoryService {
         if (template == null) {
             return;
         }
-        template.delete(List.of(ShortLinkRedisKeys.gotoCache(fullShortUrl), ShortLinkRedisKeys.gotoMiss(fullShortUrl)));
+        Runnable invalidate = () -> template.delete(List.of(
+                ShortLinkRedisKeys.gotoCache(fullShortUrl), ShortLinkRedisKeys.gotoMiss(fullShortUrl)));
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    invalidate.run();
+                }
+            });
+        } else {
+            invalidate.run();
+        }
     }
 
     private static String newCode(String prefix, int size) {

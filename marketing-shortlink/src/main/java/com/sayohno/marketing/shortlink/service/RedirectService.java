@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -44,6 +45,14 @@ public class RedirectService {
     public static final String VISIT_EVENT = "shortlink.visit";
     private static final Logger log = LoggerFactory.getLogger(RedirectService.class);
     private static final String MISS = "__miss__";
+    private static final String LOADING = "loading:";
+    private static final DefaultRedisScript<Long> COMPLETE_LOOKUP = new DefaultRedisScript<>("""
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                redis.call('PSETEX', KEYS[1], ARGV[3], ARGV[2])
+                return 1
+            end
+            return 0
+            """, Long.class);
     private static final int VISIT_QUEUE_CAPACITY = 10_000;
     private static final int VISIT_BATCH_SIZE = 200;
     private static final int VISIT_FLUSH_LIMIT = 2_000;
@@ -128,7 +137,7 @@ public class RedirectService {
         String full = domain + "/s/" + shortUri;
         Link cached = readCache(full);
         if (cached != null) {
-            ensureUsable(full, cached, true);
+            ensureUsable(cached);
             if (record) recordVisit(cached, visitorId, channelCode);
             return cached;
         }
@@ -139,13 +148,11 @@ public class RedirectService {
                 // 双重检查：排队等待回源的线程直接命中先行线程写入的缓存。
                 Link doubleChecked = readCache(full);
                 if (doubleChecked != null) {
-                    ensureUsable(full, doubleChecked, true);
+                    ensureUsable(doubleChecked);
                     if (record) recordVisit(doubleChecked, visitorId, channelCode);
                     return doubleChecked;
                 }
-                link = load(full, domain, shortUri);
-                ensureUsable(full, link, false);
-                rememberHit(full, link);
+                link = loadAndCache(full, domain, shortUri);
             }
         } finally {
             lookupLocks.remove(full, lock);
@@ -157,31 +164,42 @@ public class RedirectService {
     /** Uses the same redirect cache as public reads, but emits no visit event. */
     public java.util.Map<String, Object> warmMapping(Link link) {
         if (redis.getIfAvailable() == null || redisson.getIfAvailable() == null) return java.util.Map.of("status", "UNVERIFIED", "detail", "Redis或布隆服务未启用");
-        ensureUsable(link.getFullShortUrl(), link, false);
+        ensureUsable(link);
         var bloom = redisson.getObject().<String>getBloomFilter(ShortLinkRedisKeys.BLOOM_URI);
         if (!bloom.isExists()) return java.util.Map.of("status", "UNVERIFIED", "detail", "布隆过滤器尚未恢复，未强行初始化");
         bloom.add(link.getFullShortUrl());
-        rememberHit(link.getFullShortUrl(), link);
+        if (readCache(link.getFullShortUrl()) == null) {
+            loadAndCache(link.getFullShortUrl(), link.getDomain(), link.getShortUri());
+        }
         Link readBack = readCache(link.getFullShortUrl());
         boolean matched = readBack != null && link.getId().equals(readBack.getId()) && link.getOriginUrl().equals(readBack.getOriginUrl()) && bloom.contains(link.getFullShortUrl());
         return java.util.Map.of("status", matched ? "SUCCEEDED" : "FAILED", "detail", matched ? "主链映射与布隆已读回验证，未生成访问统计" : "主链缓存读回不一致");
     }
 
-    private void ensureUsable(String full, Link link, boolean fromCache) {
+    private Link loadAndCache(String full, String domain, String shortUri) {
+        StringRedisTemplate cache = redis.getIfAvailable();
+        String token = LOADING + UUID.randomUUID();
+        boolean ownsFill = cache != null && Boolean.TRUE.equals(cache.opsForValue()
+                .setIfAbsent(ShortLinkRedisKeys.gotoCache(full), token, Duration.ofSeconds(10)));
+        Link link = load(full, domain, shortUri);
+        if (ownsFill && link == null) {
+            completeLookup(full, token, MISS, Duration.ofSeconds(60));
+        }
+        ensureUsable(link);
+        if (ownsFill) {
+            rememberHit(full, link, token);
+        }
+        return link;
+    }
+
+    private void ensureUsable(Link link) {
         if (link == null || link.getDelTime() == null || link.getDelTime() != 0 || link.getId() == null) {
-            if (fromCache) {
-                deleteCache(full);
-            } else {
-                rememberMiss(full);
-            }
             throw new BizException(ErrorCode.NOT_FOUND, "短链不存在");
         }
         if (link.getEnableStatus() != null && link.getEnableStatus() != 0) {
-            deleteCache(full);
             throw new BizException(ErrorCode.NOT_FOUND, "短链已停用");
         }
         if (link.getValidDate() != null && !LocalDateTime.now().isBefore(link.getValidDate())) {
-            deleteCache(full);
             throw new BizException(ErrorCode.NOT_FOUND, "短链已过期");
         }
     }
@@ -214,11 +232,11 @@ public class RedirectService {
             return null;
         }
         String value = template.opsForValue().get(ShortLinkRedisKeys.gotoCache(full));
-        if (value == null || value.isBlank()) {
-            if (MISS.equals(template.opsForValue().get(ShortLinkRedisKeys.gotoMiss(full)))) {
-                return new Link();
-            }
+        if (value == null || value.startsWith(LOADING)) {
             return null;
+        }
+        if (MISS.equals(value)) {
+            return new Link();
         }
         try {
             var node = objectMapper.readTree(value);
@@ -236,21 +254,12 @@ public class RedirectService {
             }
             return link;
         } catch (Exception exception) {
-            deleteCache(full);
+            template.delete(ShortLinkRedisKeys.gotoCache(full));
             return null;
         }
     }
 
-    private void rememberHit(String full, Link current) {
-        StringRedisTemplate template = redis.getIfAvailable();
-        if (template == null || current.getId() == null) {
-            return;
-        }
-        // 直接复用刚从数据库回源加载的 Link 实体，省去冗余的二次 selectById 查询。
-        if (current.getEnableStatus() == null || current.getEnableStatus() != 0
-                || current.getDelTime() == null || current.getDelTime() != 0) {
-            return;
-        }
+    private void rememberHit(String full, Link current, String token) {
         Duration ttl = Duration.ofHours(12);
         if (current.getValidDate() != null) {
             Duration remaining = Duration.between(LocalDateTime.now(), current.getValidDate());
@@ -272,24 +281,13 @@ public class RedirectService {
         if (current.getUpdateTime() != null) {
             node.put("updateTime", current.getUpdateTime().toString());
         }
-        template.opsForValue().set(ShortLinkRedisKeys.gotoCache(full), node.toString(), ttl);
-        template.delete(ShortLinkRedisKeys.gotoMiss(full));
+        completeLookup(full, token, node.toString(), ttl);
     }
 
-    private void deleteCache(String full) {
-        StringRedisTemplate template = redis.getIfAvailable();
-        if (template == null) {
-            return;
-        }
-        template.delete(ShortLinkRedisKeys.gotoCache(full));
-    }
-
-    private void rememberMiss(String full) {
-        StringRedisTemplate template = redis.getIfAvailable();
-        if (template == null) {
-            return;
-        }
-        template.opsForValue().set(ShortLinkRedisKeys.gotoMiss(full), MISS, Duration.ofSeconds(60));
+    private void completeLookup(String full, String token, String value, Duration ttl) {
+        // 编辑事务提交时会删除回填令牌；较早开始的读请求不能再把旧映射写回。
+        redis.getObject().execute(COMPLETE_LOOKUP, List.of(ShortLinkRedisKeys.gotoCache(full)),
+                token, value, Long.toString(Math.max(1, ttl.toMillis())));
     }
 
     private void recordVisit(Link link, String visitorId, String channelCode) {

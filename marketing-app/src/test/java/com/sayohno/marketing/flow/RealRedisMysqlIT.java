@@ -79,6 +79,9 @@ class RealRedisMysqlIT {
         assertEquals(2, calls.get());
     }
 
+    @Autowired
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
+
     @AfterEach
     void clear() {
         UserContext.clear();
@@ -120,12 +123,17 @@ class RealRedisMysqlIT {
 
         var group = linkDirectoryService.createGroup("集成分组");
         var link = linkDirectoryService.createLink(group.getGid(), "https://example.com/fresh",
-                LocalDateTime.now().plusSeconds(2), "it-link", null, null);
+                LocalDateTime.now().plusSeconds(30), "it-link", null, null);
         assertEquals("https://example.com/fresh", redirectService.resolve(link.getShortUri(), "visitor-it").getOriginUrl());
         Long ttl = redis.getExpire(ShortLinkRedisKeys.gotoCache(link.getFullShortUrl()));
         assertNotNull(ttl);
-        assertTrue(ttl > 0 && ttl <= 3, "缓存 TTL 应不超过剩余有效期，实际 " + ttl);
-        linkDirectoryService.updateLink(link.getId(), "https://example.com/changed", LocalDateTime.now().plusMinutes(10), 0);
+        assertTrue(ttl > 0 && ttl <= 30, "缓存 TTL 应不超过剩余有效期，实际 " + ttl);
+        new org.springframework.transaction.support.TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            linkDirectoryService.updateLink(link.getId(), "https://example.com/changed", LocalDateTime.now().plusMinutes(10), 0);
+            String beforeCommit = java.util.concurrent.CompletableFuture.supplyAsync(() ->
+                    redirectService.resolve(link.getShortUri(), "during-edit", false).getOriginUrl()).join();
+            assertEquals("https://example.com/fresh", beforeCommit);
+        });
         assertEquals("https://example.com/changed", redirectService.resolve(link.getShortUri(), "visitor-it").getOriginUrl());
         linkDirectoryService.recycle(link.getId());
         assertThrows(BizException.class, () -> redirectService.resolve(link.getShortUri(), "visitor-it"));

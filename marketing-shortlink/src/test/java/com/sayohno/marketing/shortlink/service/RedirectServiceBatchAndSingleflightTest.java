@@ -59,14 +59,18 @@ class RedirectServiceBatchAndSingleflightTest {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         ValueOperations<String, String> ops = mock(ValueOperations.class);
         when(redisProvider.getIfAvailable()).thenReturn(redis);
+        when(redisProvider.getObject()).thenReturn(redis);
         when(redis.opsForValue()).thenReturn(ops);
 
         Map<String, String> cache = new HashMap<>();
         when(ops.get(anyString())).thenAnswer(inv -> cache.get(inv.<String>getArgument(0)));
-        doAnswer(inv -> {
-            cache.put(inv.getArgument(0), inv.getArgument(1));
-            return null;
-        }).when(ops).set(anyString(), anyString(), any());
+        when(ops.setIfAbsent(anyString(), anyString(), any(java.time.Duration.class))).thenAnswer(inv ->
+                cache.putIfAbsent(inv.getArgument(0), inv.getArgument(1)) == null);
+        when(redis.execute(any(org.springframework.data.redis.core.script.RedisScript.class), anyList(),
+                anyString(), anyString(), anyString())).thenAnswer(inv -> {
+            java.util.List<String> keys = inv.getArgument(1);
+            return cache.replace(keys.get(0), inv.getArgument(2), inv.getArgument(3)) ? 1L : 0L;
+        });
 
         Link link = new Link();
         link.setId(501L);
