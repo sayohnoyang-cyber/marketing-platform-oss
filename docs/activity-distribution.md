@@ -67,6 +67,18 @@
 
 已有活动如果只挂了模板、没有投放，发布检查失败，直到补上投放和预算。已有渠道短链保留，入口仍能按旧 `link_id` 识别；新渠道不再各建一条短链。
 
+V017 将已绑定库存的幂等键归入对应活动，独立投放使用活动编号 0。升级前可用下面的查询找出历史上被多场活动共用的库存池。
+
+```sql
+SELECT inventory_id, GROUP_CONCAT(activity_id ORDER BY activity_id) AS activity_ids
+FROM campaign_offer
+WHERE inventory_id IS NOT NULL
+GROUP BY inventory_id
+HAVING COUNT(*) > 1;
+```
+
+若查询有结果，需按历史发券记录和剩余预算核实库存归属后再升级。迁移会在创建唯一索引时停止，避免自动复制剩余库存。
+
 ## 任务顺序
 
 1. 投放和领券。

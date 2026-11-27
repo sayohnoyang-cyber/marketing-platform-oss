@@ -130,9 +130,15 @@ public class OfferInventoryService {
 
     @Transactional
     public OfferInventory allocate(long templateId, int quantity, int maxClaimsPerUser, String idempotencyKey) {
+        return allocate(0L, templateId, quantity, maxClaimsPerUser, idempotencyKey);
+    }
+
+    @Transactional
+    public OfferInventory allocate(long activityId, long templateId, int quantity, int maxClaimsPerUser, String idempotencyKey) {
         OfferPlan template = requireTemplate(templateId, quantity, maxClaimsPerUser, idempotencyKey);
         OfferInventory existing = allocationMapper.selectOne(Wrappers.<OfferInventory>lambdaQuery()
                 .eq(OfferInventory::getMerchantId, template.getMerchantId())
+                .eq(OfferInventory::getActivityId, activityId)
                 .eq(OfferInventory::getIdempotencyKey, idempotencyKey.trim()));
         if (existing != null) {
             if (!existing.getPlanId().equals(templateId) || existing.getQuantity() != quantity
@@ -145,6 +151,7 @@ public class OfferInventoryService {
             throw new BizException(ErrorCode.VALIDATION, "可投放数量不足");
         }
         OfferInventory created = new OfferInventory();
+        created.setActivityId(activityId);
         created.setPlanId(templateId);
         created.setMerchantId(template.getMerchantId());
         created.setQuantity(quantity);

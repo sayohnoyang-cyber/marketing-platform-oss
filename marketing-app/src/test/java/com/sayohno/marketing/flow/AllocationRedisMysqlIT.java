@@ -207,6 +207,23 @@ class AllocationRedisMysqlIT {
         assertEquals(3, allocationService.find(offer.getInventoryId()).getQuantity());
     }
 
+    @Test
+    void equalPlacementKeysInDifferentActivitiesCreateIndependentInventories() {
+        OfferPlan plan = createPlan(shop(), 4);
+        LocalDateTime now = LocalDateTime.now();
+        var first = campaignService.create("第一场", now.plusHours(1), now.plusHours(2), now.plusDays(1));
+        var second = campaignService.create("第二场", now.plusHours(1), now.plusHours(2), now.plusDays(1));
+        campaignService.attachCoupon(first.getId(), plan.getId());
+        campaignService.attachCoupon(second.getId(), plan.getId());
+        var a = flowService.place(first.getId(), 2, 1, "same", BigDecimal.TEN);
+        var b = flowService.place(second.getId(), 2, 1, "same", BigDecimal.TEN);
+        assertNotEquals(a.getInventoryId(), b.getInventoryId());
+        assertEquals(b.getInventoryId(), flowService.place(second.getId(), 2, 1, "same", BigDecimal.TEN).getInventoryId());
+        assertEquals(0, templateMapper.selectById(plan.getId()).getInventoryQty());
+        allocationService.freeze(a.getInventoryId());
+        assertEquals(InventoryStatus.OPEN, allocationService.find(b.getInventoryId()).getStatus());
+    }
+
     private Shop shop() {
         IamMerchant merchant = new IamMerchant();
         merchant.setName("真实商家" + UUID.randomUUID());

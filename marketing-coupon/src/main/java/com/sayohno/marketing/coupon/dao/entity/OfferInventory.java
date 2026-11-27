@@ -10,6 +10,7 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 @TableName("offer_inventory")
 public class OfferInventory extends PersistentEntity {
+    private Long activityId;
     private Long planId;
     private Long merchantId;
     private Integer quantity;

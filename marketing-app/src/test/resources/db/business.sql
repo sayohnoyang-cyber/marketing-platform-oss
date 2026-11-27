@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS campaign_offer (
     create_time DATETIME NOT NULL,
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id),
+    UNIQUE KEY uk_campaign_inventory (inventory_id),
     UNIQUE KEY uk_campaign_offer (activity_id, plan_id)
 );
 
@@ -348,6 +349,7 @@ CREATE TABLE IF NOT EXISTS campaign_claim_intent (
 );
 
 CREATE TABLE IF NOT EXISTS offer_inventory (
+    activity_id BIGINT NOT NULL DEFAULT 0,
     id BIGINT NOT NULL,
     plan_id BIGINT NOT NULL,
     merchant_id BIGINT NOT NULL,
@@ -359,7 +361,7 @@ CREATE TABLE IF NOT EXISTS offer_inventory (
     create_time DATETIME NOT NULL,
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_offer_inventory_key (merchant_id, idempotency_key)
+    UNIQUE KEY uk_offer_inventory_key (merchant_id, activity_id, idempotency_key)
 );
 
 CREATE TABLE IF NOT EXISTS offer_inventory_command (

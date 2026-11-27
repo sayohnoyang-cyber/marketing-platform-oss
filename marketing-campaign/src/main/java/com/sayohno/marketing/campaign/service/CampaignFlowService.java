@@ -209,7 +209,7 @@ public class CampaignFlowService {
             if (!beforeStart) {
                 throw new BizException(ErrorCode.CONFLICT, "开场后不能新建投放");
             }
-            allocation = allocationService.allocate(coupon.getPlanId(), quantity, maxClaimsPerUser, idempotencyKey);
+            allocation = allocationService.allocate(activityId, coupon.getPlanId(), quantity, maxClaimsPerUser, idempotencyKey);
             coupon.setInventoryId(allocation.getId());
             couponMapper.updateById(coupon);
         } else {
