@@ -54,20 +54,26 @@ public class CompositeDistributedLock implements DistributedLock {
         StringRedisTemplate redis = redisProvider == null ? null : redisProvider.getIfAvailable();
         if (redis != null) {
             String key = RedisKeyPolicy.require("infra:lock:" + lockName);
+            Boolean acquired;
             try {
-                Boolean acquired = redis.opsForValue().setIfAbsent(key, ownerId, ttl);
-                if (!Boolean.TRUE.equals(acquired)) {
-                    return Optional.empty();
-                }
-                try {
-                    return Optional.ofNullable(action.get());
-                } finally {
-                    releaseRedis(redis, key, ownerId);
-                }
+                acquired = redis.opsForValue().setIfAbsent(key, ownerId, ttl);
             } catch (RuntimeException exception) {
                 log.warn("Redis 分布式锁不可用，降级为数据库租约锁。lockName={}", lockName, exception);
+                return tryDatabaseLock(lockName, ownerId, ttl, action);
+            }
+            if (!Boolean.TRUE.equals(acquired)) {
+                return Optional.empty();
+            }
+            try {
+                return Optional.ofNullable(action.get());
+            } finally {
+                releaseRedis(redis, key, ownerId);
             }
         }
+        return tryDatabaseLock(lockName, ownerId, ttl, action);
+    }
+
+    private <T> Optional<T> tryDatabaseLock(String lockName, String ownerId, Duration ttl, Supplier<T> action) {
         if (!acquireDatabaseLock(lockName, ownerId, ttl)) {
             return Optional.empty();
         }

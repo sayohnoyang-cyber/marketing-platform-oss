@@ -60,6 +60,25 @@ class RealRedisMysqlIT {
     @Autowired
     private StringRedisTemplate redis;
 
+    @Autowired
+    private com.sayohno.marketing.common.lock.DistributedLock distributedLock;
+
+    @Test
+    void failingLockCallbackRunsOnceAndReleasesLock() {
+        String name = "test:" + UUID.randomUUID();
+        var ttl = java.time.Duration.ofSeconds(30);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        IllegalStateException failure = new IllegalStateException("任务失败");
+        assertEquals(failure, assertThrows(IllegalStateException.class, () ->
+                distributedLock.tryExecute(name, ttl, () -> {
+                    calls.incrementAndGet();
+                    throw failure;
+                })));
+        assertEquals(1, calls.get());
+        assertTrue(distributedLock.tryExecute(name, ttl, calls::incrementAndGet));
+        assertEquals(2, calls.get());
+    }
+
     @AfterEach
     void clear() {
         UserContext.clear();
