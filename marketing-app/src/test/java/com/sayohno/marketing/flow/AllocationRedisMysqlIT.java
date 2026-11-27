@@ -155,6 +155,39 @@ class AllocationRedisMysqlIT {
         }
     }
 
+    private OfferPlan createPlan(Shop shop, int stock) {
+        asMerchant(shop);
+        LocalDateTime now = LocalDateTime.now();
+        return templateService.create(shop.storeCode(), "库存回归券", IssuerScope.MERCHANT,
+                ApplyScope.STOREWIDE, null, BenefitKind.AMOUNT_OFF, stock, now.minusDays(1), now.plusDays(3),
+                "{\"maxClaimsPerUser\":1}", "{\"capAmount\":1}");
+    }
+
+    @Autowired
+    private org.springframework.transaction.PlatformTransactionManager transactions;
+
+    @Test
+    void renamingPlanPreservesConcurrentStockIncrease() {
+        Shop shop = shop();
+        OfferPlan plan = createPlan(shop, 3);
+        new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status -> {
+            templateMapper.selectById(plan.getId());
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
+                try {
+                    asMerchant(shop);
+                    templateService.increaseStock(plan.getId(), 5);
+                } finally {
+                    UserContext.clear();
+                }
+            }).join();
+            templateService.revise(plan.getId(), "新的券名", null, null, null, null);
+        });
+        OfferPlan edited = templateMapper.selectById(plan.getId());
+        assertEquals("新的券名", edited.getTitle());
+        assertEquals(8, edited.getInventoryQty());
+        assertEquals(8, edited.getIssuedTotal());
+    }
+
     private Shop shop() {
         IamMerchant merchant = new IamMerchant();
         merchant.setName("真实商家" + UUID.randomUUID());

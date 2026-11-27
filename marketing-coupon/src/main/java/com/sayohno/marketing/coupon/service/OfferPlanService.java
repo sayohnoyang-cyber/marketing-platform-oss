@@ -247,7 +247,8 @@ public class OfferPlanService {
     public OfferPlan revise(long templateId, String name, LocalDateTime validStart, LocalDateTime validEnd,
                                  String claimPolicy, String benefitPolicy) {
         var merchant = merchantAccessService.requireMerchant();
-        OfferPlan template = requireOwned(templateId);
+        OfferPlan template = templateMapper.lockOwned(templateId, merchant.getMerchantId());
+        if (template == null) throw new BizException(ErrorCode.NOT_FOUND, "优惠券模板不存在");
         // 已停发的券模板不可再做任何修改，避免已结束方案状态与规则发生歧义。
         if (template.getStatus() != OfferPlanStatus.OPEN) {
             throw new BizException(ErrorCode.CONFLICT, "已停发的券模板不能修改");
@@ -281,7 +282,14 @@ public class OfferPlanService {
             campaignGuards.forEach(guard -> guard.assertTemplateRevisionAllowed(
                     templateId, template.getUsableFrom(), template.getUsableUntil(), maxClaimsPerUser));
         }
-        templateMapper.updateById(template);
+        OfferPlan changes = new OfferPlan();
+        changes.setId(templateId);
+        changes.setTitle(template.getTitle());
+        changes.setUsableFrom(template.getUsableFrom());
+        changes.setUsableUntil(template.getUsableUntil());
+        changes.setClaimPolicy(template.getClaimPolicy());
+        changes.setBenefitPolicy(template.getBenefitPolicy());
+        templateMapper.updateById(changes);
         evictOfferCache(templateId);
         log(templateId, merchant.getUserId(), "REVISE", null);
         return template;
@@ -344,7 +352,10 @@ public class OfferPlanService {
             campaignGuards.forEach(guard -> guard.assertTemplateTerminationAllowed(templateId));
         }
         template.setStatus(OfferPlanStatus.CLOSED);
-        templateMapper.updateById(template);
+        OfferPlan changes = new OfferPlan();
+        changes.setId(templateId);
+        changes.setStatus(OfferPlanStatus.CLOSED);
+        templateMapper.updateById(changes);
         evictOfferCache(templateId);
         log(templateId, merchant.getUserId(), "TERMINATE", null);
         return template;

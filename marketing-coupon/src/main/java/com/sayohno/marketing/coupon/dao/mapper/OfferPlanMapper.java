@@ -5,11 +5,15 @@ import com.sayohno.marketing.coupon.dao.entity.OfferPlan;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
+import org.apache.ibatis.annotations.Select;
 
 import java.time.LocalDateTime;
 
 @Mapper
 public interface OfferPlanMapper extends BaseMapper<OfferPlan> {
+    @Select("SELECT * FROM offer_plan WHERE id = #{id} AND merchant_id = #{merchantId} AND del_flag = 0 FOR UPDATE")
+    OfferPlan lockOwned(@Param("id") long id, @Param("merchantId") long merchantId);
+
     @Update("""
             UPDATE offer_plan
             SET inventory_qty = inventory_qty - #{count}, update_time = #{now}

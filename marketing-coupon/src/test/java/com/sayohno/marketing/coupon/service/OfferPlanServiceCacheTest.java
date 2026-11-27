@@ -95,6 +95,7 @@ class OfferPlanServiceCacheTest {
         // 修改券方案后主动失效缓存
         CurrentUser owner = CurrentUser.builder().userId(202L).merchantId(202L).roles(Set.of(UserRole.OWNER)).build();
         when(accessService.requireMerchant()).thenReturn(owner);
+        when(templateMapper.lockOwned(101L, 202L)).thenReturn(plan);
         service.revise(101L, "新满减券", null, null, null, null);
         assertFalse(store.containsKey("coupon:offer:101"));
     }
