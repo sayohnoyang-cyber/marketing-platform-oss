@@ -47,6 +47,9 @@ jobs:
           REDIS_PORT: '6379'
         run: ./mvnw -B -ntp -pl marketing-app -am test '-Dtest=*IT' -Dsurefire.failIfNoSpecifiedTests=false
 
+      - name: 验证库存预热与重复执行
+        run: bash deploy/test-redis-cutover.sh
+
   deploy:
     needs: integration
     if: github.repository == 'sayohnoyang-cyber/marketing-platform-oss'

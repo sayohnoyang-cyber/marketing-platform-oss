@@ -228,7 +228,6 @@ sql_escape() {
 }
 
 # 与 VoucherClaimService 中 Math.max(60, Duration.between(now, usableUntil).getSeconds()) 一致
-TTL_SQL="GREATEST(60, UNIX_TIMESTAMP(usable_until) - UNIX_TIMESTAMP(NOW()))"
 PLAN_TTL_SQL="GREATEST(60, UNIX_TIMESTAMP(p.usable_until) - UNIX_TIMESTAMP(NOW()))"
 
 count_keys() {
@@ -270,7 +269,7 @@ backup_coupon_keys() {
           ;;
         *)
           payload="UNSUPPORTED_TYPE"
-          echo "警告: 键 $key 类型为 $typ，备份仅记录类型，无法按值还原" >&2
+          echo "警告: 键 $key 类型为 ${typ}，备份仅记录类型，无法按值还原" >&2
           ;;
       esac
       printf '%s\t%s\t%s\t%s\n' "$typ" "$pttl" "$key" "$payload"
@@ -284,19 +283,19 @@ backup_coupon_keys() {
 }
 
 SET_QUEUE=""
-expect_file=""
+GET_QUEUE=""
 
 begin_sets() {
   SET_QUEUE="$(mktemp)"
-  expect_file="$(mktemp)"
+  GET_QUEUE="$(mktemp)"
   : > "$SET_QUEUE"
-  : > "$expect_file"
+  : > "$GET_QUEUE"
 }
 
 queue_set() {
   local key="$1" value="$2" ttl="$3"
-  printf 'SET %s %s EX %s\n' "$key" "$value" "$ttl" >> "$SET_QUEUE"
-  printf '%s\t%s\n' "$key" "$value" >> "$expect_file"
+  printf 'SET %s %s EX %s NX\n' "$key" "$value" "$ttl" >> "$SET_QUEUE"
+  printf 'GET %s\n' "$key" >> "$GET_QUEUE"
 }
 
 flush_sets() {
@@ -304,31 +303,25 @@ flush_sets() {
   n="$(wc -l < "$SET_QUEUE" | tr -d ' ')"
   if [ "$DRY" -eq 1 ]; then
     cat "$SET_QUEUE"
-    rm -f "$SET_QUEUE" "$expect_file"
-    SET_QUEUE=""; expect_file=""
+    rm -f "$SET_QUEUE" "$GET_QUEUE"
+    SET_QUEUE=""; GET_QUEUE=""
     return 0
   fi
   if [ "${n:-0}" -gt 0 ]; then
     redis_pipe < "$SET_QUEUE" >/dev/null
-    local getq key expected actual
-    getq="$(mktemp)"
-    while IFS=$'\t' read -r key expected; do
-      [ -z "${key:-}" ] && continue
-      printf 'GET %s\n' "$key" >> "$getq"
-    done < "$expect_file"
-    # paste 把期望值与 GET 结果按行对齐（避免双 stdin 互相覆盖，且兼容 bash 3.2）
-    while IFS=$'\t' read -r key expected actual; do
-      actual="$(printf '%s' "$actual" | tr -d '\r')"
-      if [ "$actual" != "$expected" ]; then
-        echo "校验失败: $key 期望 $expected，实际 ${actual:-<空>}" >&2
-        rm -f "$SET_QUEUE" "$expect_file" "$getq"
-        exit 1
-      fi
-    done < <(paste "$expect_file" <(redis_pipe < "$getq" | clean_lines))
-    rm -f "$getq"
+    # NX 避免覆盖正在领取的计数，读回时实时值可能已发生合法变化。
+    local values
+    values="$(mktemp)"
+    redis_pipe < "$GET_QUEUE" | tr -d '\r' > "$values"
+    if [ "$(wc -l < "$values" | tr -d ' ')" != "$n" ] || grep -qvE '^[0-9]+$' "$values"; then
+      echo "预热校验失败：存在缺失或非数值的库存、限领键" >&2
+      rm -f "$SET_QUEUE" "$GET_QUEUE" "$values"
+      exit 1
+    fi
+    rm -f "$values"
   fi
-  rm -f "$SET_QUEUE" "$expect_file"
-  SET_QUEUE=""; expect_file=""
+  rm -f "$SET_QUEUE" "$GET_QUEUE"
+  SET_QUEUE=""; GET_QUEUE=""
 }
 
 warm_offer_keys() {
@@ -340,61 +333,65 @@ warm_offer_keys() {
   echo "---- 预热 offer:plan:{id}:inventory（剩余未分配/直接领取库存 = offer_plan.inventory_qty）----"
   begin_sets
   mysql_query "$qfile" -N -B -e "SET time_zone = '+08:00';
-    SELECT id, inventory_qty, $TTL_SQL AS ttl
-    FROM offer_plan
+    SELECT p.id, GREATEST(0, p.inventory_qty - (SELECT COUNT(*) FROM claim_ticket t
+        WHERE t.plan_id = p.id AND t.inventory_id = 0 AND t.status = 'reserved')), $PLAN_TTL_SQL AS ttl
+    FROM offer_plan p
     WHERE del_flag = 0 AND status = 'open' AND usable_until > NOW();"
   while IFS=$'\t' read -r id qty ttl; do
     [ -z "${id:-}" ] && continue
-    queue_set "offer:plan:${id}:inventory" "$qty" "$ttl"
+    queue_set "offer:plan:{${id}}:inventory" "$qty" "$ttl"
     plans=$((plans + 1))
   done < "$qfile"
   flush_sets
 
-  echo "---- 预热 offer:inventory:{id}（剩余库存 = quantity - claimed_count）----"
+  echo "---- 预热 offer:plan:{planId}:inventory:inventoryId（数据库剩余减在途预扣）----"
   begin_sets
   mysql_query "$qfile" -N -B -e "SET time_zone = '+08:00';
-    SELECT i.id, GREATEST(0, i.quantity - i.claimed_count) AS remaining, $PLAN_TTL_SQL AS ttl
+    SELECT i.plan_id, i.id, GREATEST(0, i.quantity - i.claimed_count - (SELECT COUNT(*) FROM claim_ticket t
+        WHERE t.inventory_id = i.id AND t.status = 'reserved')) AS remaining, $PLAN_TTL_SQL AS ttl
     FROM offer_inventory i
     INNER JOIN offer_plan p ON p.id = i.plan_id
     WHERE i.status = 'open' AND p.del_flag = 0 AND p.status = 'open' AND p.usable_until > NOW();"
-  while IFS=$'\t' read -r id remaining ttl; do
+  while IFS=$'\t' read -r plan_id id remaining ttl; do
     [ -z "${id:-}" ] && continue
-    queue_set "offer:inventory:${id}" "$remaining" "$ttl"
+    queue_set "offer:plan:{${plan_id}}:inventory:${id}" "$remaining" "$ttl"
     invs=$((invs + 1))
   done < "$qfile"
   flush_sets
 
-  echo "---- 预热 offer:plan:{planId}:quota:{userId}（已领次数 = GREATEST(COUNT(*), MAX(claim_seq))）----"
+  echo "---- 预热 offer:plan:{planId}:quota:{userId}（已领及在途次数）----"
   begin_sets
   mysql_query "$qfile" -N -B -e "SET time_zone = '+08:00';
     SELECT v.user_id, v.plan_id,
-           GREATEST(COUNT(*), COALESCE(MAX(v.claim_seq), 0)) AS claimed,
+           COUNT(*) AS claimed,
            GREATEST(60, UNIX_TIMESTAMP(MAX(p.usable_until)) - UNIX_TIMESTAMP(NOW())) AS ttl
-    FROM issued_voucher v
+    FROM (SELECT user_id, plan_id, inventory_id FROM issued_voucher WHERE del_flag = 0
+          UNION ALL SELECT user_id, plan_id, inventory_id FROM claim_ticket WHERE status = 'reserved') v
     INNER JOIN offer_plan p ON p.id = v.plan_id
-    WHERE v.del_flag = 0 AND p.del_flag = 0 AND p.status = 'open' AND p.usable_until > NOW()
+    WHERE p.del_flag = 0 AND p.status = 'open' AND p.usable_until > NOW()
     GROUP BY v.user_id, v.plan_id;"
   while IFS=$'\t' read -r user_id plan_id claimed ttl; do
     [ -z "${user_id:-}" ] && continue
-    queue_set "offer:plan:${plan_id}:quota:${user_id}" "$claimed" "$ttl"
+    queue_set "offer:plan:{${plan_id}}:quota:${user_id}" "$claimed" "$ttl"
     plan_quotas=$((plan_quotas + 1))
   done < "$qfile"
   flush_sets
 
-  echo "---- 预热 offer:inventory:{inventoryId}:quota:{userId}（该投放已领次数 = COUNT(*)）----"
+  echo "---- 预热 offer:plan:{planId}:inventory:inventoryId:quota:userId（已领及在途次数）----"
   begin_sets
   mysql_query "$qfile" -N -B -e "SET time_zone = '+08:00';
-    SELECT v.user_id, v.inventory_id, COUNT(*) AS claimed,
+    SELECT v.user_id, v.plan_id, v.inventory_id, COUNT(*) AS claimed,
            GREATEST(60, UNIX_TIMESTAMP(MAX(p.usable_until)) - UNIX_TIMESTAMP(NOW())) AS ttl
-    FROM issued_voucher v
+    FROM (SELECT user_id, plan_id, inventory_id FROM issued_voucher WHERE del_flag = 0
+          UNION ALL SELECT user_id, plan_id, inventory_id FROM claim_ticket WHERE status = 'reserved') v
     INNER JOIN offer_plan p ON p.id = v.plan_id
     INNER JOIN offer_inventory i ON i.id = v.inventory_id
-    WHERE v.del_flag = 0 AND v.inventory_id > 0
+    WHERE v.inventory_id > 0
       AND i.status = 'open' AND p.del_flag = 0 AND p.status = 'open' AND p.usable_until > NOW()
-    GROUP BY v.user_id, v.inventory_id;"
-  while IFS=$'\t' read -r user_id inventory_id claimed ttl; do
+    GROUP BY v.user_id, v.plan_id, v.inventory_id;"
+  while IFS=$'\t' read -r user_id plan_id inventory_id claimed ttl; do
     [ -z "${user_id:-}" ] && continue
-    queue_set "offer:inventory:${inventory_id}:quota:${user_id}" "$claimed" "$ttl"
+    queue_set "offer:plan:{${plan_id}}:inventory:${inventory_id}:quota:${user_id}" "$claimed" "$ttl"
     inv_quotas=$((inv_quotas + 1))
   done < "$qfile"
   flush_sets
@@ -404,7 +401,7 @@ warm_offer_keys() {
   WARM_INV_STOCK="$invs"
   WARM_PLAN_QUOTA="$plan_quotas"
   WARM_INV_QUOTA="$inv_quotas"
-  echo "预热完成: plan 库存 $plans，投放库存 $invs，方案限领 $plan_quotas，投放限领 $inv_quotas"
+  echo "预热完成: plan 库存 ${plans}，投放库存 ${invs}，方案限领 ${plan_quotas}，投放限领 $inv_quotas"
 }
 
 delete_coupon_keys() {
@@ -477,10 +474,10 @@ fi
 STAMP="$(TZ=Asia/Shanghai date '+%Y%m%d-%H%M%S')"
 
 if [ "$WARM" -eq 1 ]; then
-  done_warm="$(history_done redis-offer-warm)"
+  done_warm="$(history_done redis-offer-warm-v2)"
   if [ "$FORCE" -eq 0 ] && [ "${done_warm:-0}" != "0" ]; then
-    echo "已记录 redis-offer-warm，跳过预热（需要重跑请加 --force）。"
-    SKIPPED="${SKIPPED:+$SKIPPED,}redis-offer-warm"
+    echo "已记录 redis-offer-warm-v2，跳过预热（需要重跑请加 --force）。"
+    SKIPPED="${SKIPPED:+$SKIPPED,}redis-offer-warm-v2"
   else
     if [ "$COUPON_SCAN" -gt 0 ]; then
       BACKUP_FILE="$BACKUP_DIR/redis-coupon-${STAMP}-warm.txt"
@@ -489,7 +486,7 @@ if [ "$WARM" -eq 1 ]; then
       echo "没有 coupon:* 键需要备份。"
     fi
     warm_offer_keys
-    record_history redis-offer-warm "plan_stock=${WARM_PLAN_STOCK};inv_stock=${WARM_INV_STOCK};plan_quota=${WARM_PLAN_QUOTA};inv_quota=${WARM_INV_QUOTA};coupon_backup=${BACKUP_COUNT}"
+    record_history redis-offer-warm-v2 "plan_stock=${WARM_PLAN_STOCK};inv_stock=${WARM_INV_STOCK};plan_quota=${WARM_PLAN_QUOTA};inv_quota=${WARM_INV_QUOTA};coupon_backup=${BACKUP_COUNT}"
   fi
 fi
 
